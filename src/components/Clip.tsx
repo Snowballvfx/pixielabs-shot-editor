@@ -53,27 +53,13 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
       case OverlayType.TRANSITION_IN:
         const transitionIn = overlay as TransitionInOverlay
         return (
-          <div className="clip-content">
-            <div className="clip-title" style={{ fontSize: '8px', textAlign: 'center' }}>
-              IN
-            </div>
-            <div style={{ fontSize: '6px', opacity: 0.7, textAlign: 'center' }}>
-              {transitionIn.transitionType}
-            </div>
-          </div>
+          <div className="clip-content" />
         )
       
       case OverlayType.TRANSITION_OUT:
         const transitionOut = overlay as TransitionOutOverlay
         return (
-          <div className="clip-content">
-            <div className="clip-title" style={{ fontSize: '8px', textAlign: 'center' }}>
-              OUT
-            </div>
-            <div style={{ fontSize: '6px', opacity: 0.7, textAlign: 'center' }}>
-              {transitionOut.transitionType}
-            </div>
-          </div>
+          <div className="clip-content" />
         )
       
       case OverlayType.SOUND:

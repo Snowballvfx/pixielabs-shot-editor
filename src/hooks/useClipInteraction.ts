@@ -126,7 +126,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     
     // Determine drag type based on click position relative to the full clip
     let dragType: 'move' | 'resize-left' | 'resize-right' = 'move'
-    const resizeHandleWidth = 4
+    const resizeHandleWidth = 8
     
     // Transition resize logic: transition-in only LEFT, transition-out only RIGHT
     if (overlay.type === OverlayType.TRANSITION_IN) {
@@ -424,7 +424,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     
     const rect = overlayElement.getBoundingClientRect()
     const relativeX = mouseX - rect.left
-    const resizeHandleWidth = 4
+    const resizeHandleWidth = 8
     
     if (relativeX <= resizeHandleWidth) return 'ew-resize'
     if (relativeX >= rect.width - resizeHandleWidth) return 'ew-resize'
