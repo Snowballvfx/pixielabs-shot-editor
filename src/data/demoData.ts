@@ -1,0 +1,191 @@
+import { Overlay, OverlayType, ClipOverlay, SoundOverlay, TextOverlay, ImageOverlay } from '../types/overlays'
+
+export const demoOverlays: Overlay[] = [
+  // Video clip on track 0
+  {
+    id: 'clip-1',
+    type: OverlayType.CLIP,
+    startTime: 0,
+    duration: 8,
+    row: 0,
+    src: '/demo/video1.mp4',
+    mediaStartTime: 0,
+    volume: 1,
+    muted: false,
+    selected: false
+  },
+  
+  // Another video clip on track 0
+  {
+    id: 'clip-2',
+    type: OverlayType.CLIP,
+    startTime: 10,
+    duration: 6,
+    row: 0,
+    src: '/demo/video2.mp4',
+    mediaStartTime: 2,
+    volume: 0.8,
+    muted: false,
+    selected: false
+  },
+  
+  // Audio track on track 1
+  {
+    id: 'sound-1',
+    type: OverlayType.SOUND,
+    startTime: 0,
+    duration: 20,
+    row: 1,
+    src: '/demo/background-music.mp3',
+    mediaStartTime: 0,
+    volume: 0.3,
+    muted: false,
+    selected: false
+  },
+  
+  // Sound effect on track 1
+  {
+    id: 'sound-2',
+    type: OverlayType.SOUND,
+    startTime: 8.5,
+    duration: 2,
+    row: 1,
+    src: '/demo/sound-effect.wav',
+    mediaStartTime: 0,
+    volume: 0.7,
+    muted: false,
+    selected: false
+  },
+  
+  // Text overlay on track 2
+  {
+    id: 'text-1',
+    type: OverlayType.TEXT,
+    startTime: 2,
+    duration: 4,
+    row: 2,
+    text: 'Welcome to the Timeline!',
+    fontSize: 24,
+    fontFamily: 'Arial',
+    color: '#ffffff',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    x: 100,
+    y: 50,
+    width: 300,
+    height: 60,
+    selected: false
+  },
+  
+  // Another text overlay
+  {
+    id: 'text-2',
+    type: OverlayType.TEXT,
+    startTime: 12,
+    duration: 3,
+    row: 2,
+    text: 'End Credits',
+    fontSize: 18,
+    fontFamily: 'Arial',
+    color: '#ffff00',
+    x: 200,
+    y: 400,
+    width: 200,
+    height: 40,
+    selected: false
+  },
+  
+  // Image overlay on track 3
+  {
+    id: 'image-1',
+    type: OverlayType.IMAGE,
+    startTime: 5,
+    duration: 3,
+    row: 3,
+    src: '/demo/logo.png',
+    x: 50,
+    y: 50,
+    width: 100,
+    height: 100,
+    opacity: 0.8,
+    selected: false
+  },
+  
+  // Video clip on track 4 (picture-in-picture)
+  {
+    id: 'clip-3',
+    type: OverlayType.CLIP,
+    startTime: 3,
+    duration: 5,
+    row: 4,
+    src: '/demo/pip-video.mp4',
+    mediaStartTime: 0,
+    volume: 0.5,
+    muted: true,
+    selected: false
+  }
+]
+
+// Helper function to generate additional demo overlays
+export function generateRandomOverlay(id: string, row: number): Overlay {
+  const types = [OverlayType.CLIP, OverlayType.SOUND, OverlayType.TEXT, OverlayType.IMAGE]
+  const type = types[Math.floor(Math.random() * types.length)]
+  const startTime = Math.random() * 20
+  const duration = 1 + Math.random() * 5
+  
+  const baseOverlay = {
+    id,
+    type,
+    startTime,
+    duration,
+    row,
+    selected: false
+  }
+  
+  switch (type) {
+    case OverlayType.CLIP:
+      return {
+        ...baseOverlay,
+        src: `/demo/random-video-${Math.floor(Math.random() * 5) + 1}.mp4`,
+        mediaStartTime: 0,
+        volume: 0.5 + Math.random() * 0.5,
+        muted: Math.random() > 0.7
+      } as ClipOverlay
+      
+    case OverlayType.SOUND:
+      return {
+        ...baseOverlay,
+        src: `/demo/random-audio-${Math.floor(Math.random() * 3) + 1}.mp3`,
+        mediaStartTime: 0,
+        volume: 0.3 + Math.random() * 0.4,
+        muted: false
+      } as SoundOverlay
+      
+    case OverlayType.TEXT:
+      const texts = ['Hello World', 'Sample Text', 'Demo Title', 'Random Text']
+      return {
+        ...baseOverlay,
+        text: texts[Math.floor(Math.random() * texts.length)],
+        fontSize: 16 + Math.random() * 16,
+        fontFamily: 'Arial',
+        color: `hsl(${Math.random() * 360}, 70%, 70%)`,
+        x: Math.random() * 400,
+        y: Math.random() * 300,
+        width: 100 + Math.random() * 200,
+        height: 40 + Math.random() * 60
+      } as TextOverlay
+      
+    case OverlayType.IMAGE:
+      return {
+        ...baseOverlay,
+        src: `/demo/random-image-${Math.floor(Math.random() * 3) + 1}.jpg`,
+        x: Math.random() * 300,
+        y: Math.random() * 200,
+        width: 50 + Math.random() * 100,
+        height: 50 + Math.random() * 100,
+        opacity: 0.5 + Math.random() * 0.5
+      } as ImageOverlay
+      
+    default:
+      return baseOverlay as Overlay
+  }
+}
