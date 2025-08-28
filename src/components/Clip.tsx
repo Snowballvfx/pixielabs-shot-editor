@@ -1,5 +1,5 @@
 import React from 'react'
-import { Overlay, OverlayType, SoundOverlay } from '../types/overlays'
+import { Overlay, OverlayType, SoundOverlay, TransitionInOverlay, TransitionOutOverlay } from '../types/overlays'
 import { useTimeline } from '../contexts/TimelineContext'
 import { useClipInteraction } from '../hooks/useClipInteraction'
 import { useWaveform } from '../hooks/useWaveform'
@@ -17,6 +17,17 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
     overlay.type === OverlayType.SOUND ? (overlay as SoundOverlay).src : undefined
   )
   
+  // Get parent clip for transitions to match colors
+  const getParentClip = () => {
+    if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
+      const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
+      return state.overlays.find(o => o.id === parentClipId)
+    }
+    return null
+  }
+  
+  const parentClip = getParentClip()
+  
   // Calculate clip dimensions and position
   const clipStyle = getClipStyle(overlay)
   const width = overlay.duration * settings.pixelsPerSecond * state.zoom
@@ -25,7 +36,12 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
   // Get clip-specific styling
   const getClipClassName = () => {
     const baseClass = 'clip'
-    const typeClass = `clip-${overlay.type}`
+    // For transitions, use parent clip type for color matching, but keep transition class for gradients
+    let typeClass = `clip-${overlay.type}`
+    if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
+      const parentTypeClass = parentClip ? `clip-${parentClip.type}` : 'clip-clip'
+      typeClass = `${typeClass} ${parentTypeClass}-transition`
+    }
     const selectedClass = overlay.selected ? 'selected' : ''
     const draggingClass = dragInfo?.overlayId === overlay.id ? 'dragging' : ''
     return [baseClass, typeClass, selectedClass, draggingClass].filter(Boolean).join(' ')
@@ -34,6 +50,32 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
   // Render clip content based on type
   const renderClipContent = () => {
     switch (overlay.type) {
+      case OverlayType.TRANSITION_IN:
+        const transitionIn = overlay as TransitionInOverlay
+        return (
+          <div className="clip-content">
+            <div className="clip-title" style={{ fontSize: '8px', textAlign: 'center' }}>
+              IN
+            </div>
+            <div style={{ fontSize: '6px', opacity: 0.7, textAlign: 'center' }}>
+              {transitionIn.transitionType}
+            </div>
+          </div>
+        )
+      
+      case OverlayType.TRANSITION_OUT:
+        const transitionOut = overlay as TransitionOutOverlay
+        return (
+          <div className="clip-content">
+            <div className="clip-title" style={{ fontSize: '8px', textAlign: 'center' }}>
+              OUT
+            </div>
+            <div style={{ fontSize: '6px', opacity: 0.7, textAlign: 'center' }}>
+              {transitionOut.transitionType}
+            </div>
+          </div>
+        )
+      
       case OverlayType.SOUND:
         const soundOverlay = overlay as SoundOverlay
         let peaks: number[] = []
@@ -178,21 +220,50 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
     >
       {renderClipContent()}
       
-      {/* Resize handles */}
-      <div 
-        className="resize-handle resize-handle-left"
-        onMouseDown={(e) => {
-          e.stopPropagation()
-          handleMouseDown(e, overlay)
-        }}
-      />
-      <div 
-        className="resize-handle resize-handle-right"
-        onMouseDown={(e) => {
-          e.stopPropagation()
-          handleMouseDown(e, overlay)
-        }}
-      />
+      {/* Resize handles - for clips and selective handles for transitions */}
+      {overlay.type !== OverlayType.TRANSITION_IN && overlay.type !== OverlayType.TRANSITION_OUT ? (
+        // Regular clips get normal resize handles
+        <>
+          <div 
+            className="resize-handle resize-handle-left"
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              handleMouseDown(e, overlay)
+            }}
+          />
+          <div 
+            className="resize-handle resize-handle-right"
+            onMouseDown={(e) => {
+              e.stopPropagation()
+              handleMouseDown(e, overlay)
+            }}
+          />
+        </>
+      ) : (
+        // Transitions get selective resize handles
+        <>
+          {/* Transition-in: only left resize handle */}
+          {overlay.type === OverlayType.TRANSITION_IN && (
+            <div 
+              className="resize-handle resize-handle-left transition-resize"
+              onMouseDown={(e) => {
+                e.stopPropagation()
+                handleMouseDown(e, overlay)
+              }}
+            />
+          )}
+          {/* Transition-out: only right resize handle */}
+          {overlay.type === OverlayType.TRANSITION_OUT && (
+            <div 
+              className="resize-handle resize-handle-right transition-resize"
+              onMouseDown={(e) => {
+                e.stopPropagation()
+                handleMouseDown(e, overlay)
+              }}
+            />
+          )}
+        </>
+      )}
     </div>
   )
 }

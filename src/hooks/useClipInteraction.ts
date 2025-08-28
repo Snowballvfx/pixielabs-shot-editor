@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
-import { Overlay, DragInfo } from '../types/overlays'
+import { Overlay, DragInfo, OverlayType, TransitionInOverlay, TransitionOutOverlay } from '../types/overlays'
 
 interface UseClipInteractionOptions {
   onDragStart?: (overlay: Overlay) => void
@@ -15,6 +15,42 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   const dragThreshold = 5 // pixels
   
   const timelineRef = useRef<HTMLDivElement>(null)
+  
+  // Helper functions for grouped interactions
+  const getRelatedOverlays = useCallback((overlay: Overlay): Overlay[] => {
+    const related: Overlay[] = [overlay]
+    
+    if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
+      // For transitions, find the parent clip and sibling transition
+      const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
+      const parentClip = state.overlays.find(o => o.id === parentClipId)
+      
+      if (parentClip) {
+        related.push(parentClip)
+        
+        // Find sibling transition
+        if (overlay.type === OverlayType.TRANSITION_IN && parentClip.transitionOutId) {
+          const siblingTransition = state.overlays.find(o => o.id === parentClip.transitionOutId)
+          if (siblingTransition) related.push(siblingTransition)
+        } else if (overlay.type === OverlayType.TRANSITION_OUT && parentClip.transitionInId) {
+          const siblingTransition = state.overlays.find(o => o.id === parentClip.transitionInId)
+          if (siblingTransition) related.push(siblingTransition)
+        }
+      }
+    } else {
+      // For clips, find their transition overlays
+      if (overlay.transitionInId) {
+        const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
+        if (transitionIn) related.push(transitionIn)
+      }
+      if (overlay.transitionOutId) {
+        const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
+        if (transitionOut) related.push(transitionOut)
+      }
+    }
+    
+    return related
+  }, [state.overlays])
   
   // Convert pixel position to time (accounting for zoom and track label offset)
   const pixelToTime = useCallback((pixel: number): number => {
@@ -32,18 +68,20 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     return Math.round(time / settings.gridSize) * settings.gridSize
   }, [settings.snapToGrid, settings.gridSize])
   
-  // Check for collisions with other overlays
+  // Check for collisions with other overlays (excluding related overlays in the group)
   const checkCollision = useCallback((overlay: Overlay, newStartTime: number, newDuration?: number): boolean => {
     const duration = newDuration ?? overlay.duration
     const endTime = newStartTime + duration
+    const relatedOverlays = getRelatedOverlays(overlay)
+    const relatedIds = new Set(relatedOverlays.map(o => o.id))
     
     return state.overlays.some(other => {
-      if (other.id === overlay.id || other.row !== overlay.row) return false
+      if (relatedIds.has(other.id) || other.row !== overlay.row) return false
       
       const otherEndTime = other.startTime + other.duration
       return !(endTime <= other.startTime || newStartTime >= otherEndTime)
     })
-  }, [state.overlays])
+  }, [state.overlays, getRelatedOverlays])
   
   // Find the nearest valid position without collision
   const findValidPosition = useCallback((overlay: Overlay, targetTime: number): number => {
@@ -90,10 +128,24 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     let dragType: 'move' | 'resize-left' | 'resize-right' = 'move'
     const resizeHandleWidth = 4
     
-    if (clickX <= resizeHandleWidth) {
-      dragType = 'resize-left'
-    } else if (clickX >= overlayWidth - resizeHandleWidth) {
-      dragType = 'resize-right'
+    // Transition resize logic: transition-in only LEFT, transition-out only RIGHT
+    if (overlay.type === OverlayType.TRANSITION_IN) {
+      // Only left resize handle for transition-in
+      if (clickX <= resizeHandleWidth) {
+        dragType = 'resize-left'
+      }
+    } else if (overlay.type === OverlayType.TRANSITION_OUT) {
+      // Only right resize handle for transition-out
+      if (clickX >= overlayWidth - resizeHandleWidth) {
+        dragType = 'resize-right'
+      }
+    } else {
+      // Regular clips get both resize handles
+      if (clickX <= resizeHandleWidth) {
+        dragType = 'resize-left'
+      } else if (clickX >= overlayWidth - resizeHandleWidth) {
+        dragType = 'resize-right'
+      }
     }
     
     console.log('Drag detection:', { 
@@ -144,8 +196,47 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           const newStartTime = Math.max(0, currentDragInfo.originalStartTime + deltaTime)
           const validStartTime = findValidPosition(overlay, newStartTime)
           
-          actions.updateOverlay(overlay.id, { startTime: validStartTime })
+          // Move all related overlays as a group
+          const relatedOverlays = getRelatedOverlays(overlay)
+          relatedOverlays.forEach(relatedOverlay => {
+            if (relatedOverlay.type === OverlayType.TRANSITION_IN || relatedOverlay.type === OverlayType.TRANSITION_OUT) {
+              // For transitions, maintain their relative position to the parent clip
+              const transition = relatedOverlay as TransitionInOverlay | TransitionOutOverlay
+              const parentClip = relatedOverlays.find(o => o.id === transition.parentClipId)
+              if (parentClip) {
+                let newTransitionStartTime
+                if (relatedOverlay.type === OverlayType.TRANSITION_IN) {
+                  // Transition-in ends when clip starts
+                  newTransitionStartTime = validStartTime - relatedOverlay.duration
+                } else {
+                  // Transition-out starts when clip ends
+                  newTransitionStartTime = validStartTime + parentClip.duration
+                }
+                actions.updateOverlayBatch(relatedOverlay.id, { startTime: newTransitionStartTime, row: (parentClip as any).row })
+              }
+            } else {
+              // For clips, apply the same delta
+              actions.updateOverlayBatch(relatedOverlay.id, { startTime: validStartTime })
+            }
+          })
         } else if (currentDragInfo.dragType === 'resize-left') {
+          // Handle transition resize differently - only transition-in can resize from left
+          if (overlay.type === OverlayType.TRANSITION_IN) {
+            const newDuration = Math.max(0.05, currentDragInfo.originalDuration - deltaTime)
+            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionInOverlay).parentClipId)
+            if (parentClip) {
+              const newTransitionStart = parentClip.startTime - snapToGrid(newDuration)
+              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: snapToGrid(newDuration), row: parentClip.row })
+            } else {
+              actions.updateOverlayBatch(overlay.id, { duration: snapToGrid(newDuration) })
+            }
+            return
+          } else if (overlay.type === OverlayType.TRANSITION_OUT) {
+            // Transition-out cannot resize from left
+            return
+          }
+          
+          // Regular clip resize logic
           const newStartTime = Math.max(0, currentDragInfo.originalStartTime + deltaTime)
           const newDuration = Math.max(0.1, currentDragInfo.originalDuration - deltaTime)
           
@@ -163,14 +254,49 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               startTime: snapToGrid(newStartTime), 
               duration: snapToGrid(newDuration) 
             })
-            actions.updateOverlay(overlay.id, {
+            
+            // Update the main overlay
+            actions.updateOverlayBatch(overlay.id, {
               startTime: snapToGrid(newStartTime),
               duration: snapToGrid(newDuration)
             })
+            
+            // Update associated transitions
+            if (overlay.transitionInId) {
+              const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
+              if (transitionIn) {
+                const tInStart = snapToGrid(newStartTime) - transitionIn.duration
+                actions.updateOverlayBatch(overlay.transitionInId, { startTime: tInStart, row: overlay.row })
+              }
+            }
+            if (overlay.transitionOutId) {
+              const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
+              if (transitionOut) {
+                const newTransitionOutStart = snapToGrid(newStartTime) + snapToGrid(newDuration)
+                actions.updateOverlayBatch(overlay.transitionOutId, { startTime: newTransitionOutStart, row: overlay.row })
+              }
+            }
           } else {
             console.log('Left resize collision detected')
           }
         } else if (currentDragInfo.dragType === 'resize-right') {
+          // Handle transition resize differently - only transition-out can resize from right
+          if (overlay.type === OverlayType.TRANSITION_OUT) {
+            const newDuration = Math.max(0.05, currentDragInfo.originalDuration + deltaTime)
+            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionOutOverlay).parentClipId)
+            if (parentClip) {
+              const newTransitionStart = parentClip.startTime + parentClip.duration
+              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: snapToGrid(newDuration), row: parentClip.row })
+            } else {
+              actions.updateOverlayBatch(overlay.id, { duration: snapToGrid(newDuration) })
+            }
+            return
+          } else if (overlay.type === OverlayType.TRANSITION_IN) {
+            // Transition-in cannot resize from right
+            return
+          }
+          
+          // Regular clip resize logic
           const newDuration = Math.max(0.1, currentDragInfo.originalDuration + deltaTime)
           
           console.log('Right resize:', {
@@ -185,7 +311,18 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           // For right resize, startTime should remain at the original position
           if (!checkCollision(overlay, currentDragInfo.originalStartTime, newDuration)) {
             console.log('Updating duration to:', snapToGrid(newDuration))
-            actions.updateOverlay(overlay.id, { duration: snapToGrid(newDuration) })
+            
+            // Update the main overlay duration
+            actions.updateOverlayBatch(overlay.id, { duration: snapToGrid(newDuration) })
+            
+            // Update transition-out position if it exists
+            if (overlay.transitionOutId) {
+              const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
+              if (transitionOut) {
+                const newTransitionOutStart = currentDragInfo.originalStartTime + snapToGrid(newDuration)
+                actions.updateOverlayBatch(overlay.transitionOutId, { startTime: newTransitionOutStart, row: overlay.row })
+              }
+            }
           } else {
             console.log('Collision detected, not updating')
           }
@@ -194,6 +331,11 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     }
     
     const handleMouseUp = () => {
+      // Commit history if we were actually dragging
+      if (localIsDragging) {
+        actions.commitDragHistory()
+      }
+      
       localIsDragging = false
       setIsDragging(false)
       actions.endDrag()

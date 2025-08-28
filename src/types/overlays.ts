@@ -3,7 +3,9 @@ export enum OverlayType {
   SOUND = 'sound',
   TEXT = 'text',
   IMAGE = 'image',
-  CAPTION = 'caption'
+  CAPTION = 'caption',
+  TRANSITION_IN = 'transition-in',
+  TRANSITION_OUT = 'transition-out'
 }
 
 export interface BaseOverlay {
@@ -13,6 +15,9 @@ export interface BaseOverlay {
   duration: number
   row: number
   selected: boolean
+  parentClipId?: string // For transitions, the ID of the parent clip
+  transitionInId?: string // For clips, the ID of the transition-in tag
+  transitionOutId?: string // For clips, the ID of the transition-out tag
 }
 
 export interface ClipOverlay extends BaseOverlay {
@@ -81,7 +86,19 @@ export interface CaptionOverlay extends BaseOverlay {
   styles: CaptionStyles
 }
 
-export type Overlay = ClipOverlay | SoundOverlay | TextOverlay | ImageOverlay | CaptionOverlay
+export interface TransitionInOverlay extends BaseOverlay {
+  type: OverlayType.TRANSITION_IN
+  parentClipId: string
+  transitionType: 'fade' | 'slide' | 'wipe' | 'dissolve'
+}
+
+export interface TransitionOutOverlay extends BaseOverlay {
+  type: OverlayType.TRANSITION_OUT
+  parentClipId: string
+  transitionType: 'fade' | 'slide' | 'wipe' | 'dissolve'
+}
+
+export type Overlay = ClipOverlay | SoundOverlay | TextOverlay | ImageOverlay | CaptionOverlay | TransitionInOverlay | TransitionOutOverlay
 
 export interface TimelineState {
   overlays: Overlay[]
@@ -106,4 +123,11 @@ export interface TimelineSettings {
   trackHeight: number
   snapToGrid: boolean
   gridSize: number
+}
+
+export interface HistoryState {
+  past: TimelineState[]
+  present: TimelineState
+  future: TimelineState[]
+  maxHistorySize: number
 }

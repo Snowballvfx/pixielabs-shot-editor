@@ -2,11 +2,15 @@ import React from 'react'
 import { usePlayback } from '../hooks/usePlayback'
 import { useTimeline } from '../contexts/TimelineContext'
 import { useHotkeys } from 'react-hotkeys-hook'
-import { Play, Pause, SkipBack, SkipForward, X } from 'lucide-react'
+import { OverlayType } from '../types/overlays'
+import { Play, Pause, SkipBack, SkipForward, X, Undo2, Redo2, Trash2 } from 'lucide-react'
 
 const TimelineHeader: React.FC = () => {
   const { currentTime, duration, isPlaying, togglePlayPause, skipToStart, skipToEnd, formatTime } = usePlayback()
   const { state, actions } = useTimeline()
+  
+  const canUndo = actions.canUndo()
+  const canRedo = actions.canRedo()
   
   const handleZoomChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const zoom = parseFloat(event.target.value)
@@ -23,6 +27,57 @@ const TimelineHeader: React.FC = () => {
     e.preventDefault()
     actions.setZoom(Math.max(state.zoom - 0.1, 0.1))
   }, {}, [state.zoom, actions])
+  
+  // Undo/Redo keyboard shortcuts
+  useHotkeys('ctrl+z', (e) => {
+    e.preventDefault()
+    if (canUndo) actions.undo()
+  }, { enableOnFormTags: true }, [canUndo, actions])
+  useHotkeys('ctrl+shift+z', (e) => {
+    e.preventDefault()
+    if (canRedo) actions.redo()
+  }, { enableOnFormTags: true }, [canRedo, actions])
+  
+  // Delete key functionality
+  useHotkeys('delete', (e) => {
+    e.preventDefault()
+    handleDeleteSelected()
+  }, { enableOnFormTags: true }, [state.selectedOverlayIds, actions])
+  
+  const handleDeleteSelected = () => {
+    if (state.selectedOverlayIds.length === 0) return
+    
+    // Get all overlays to delete (including related transitions)
+    const overlaysToDelete = new Set<string>()
+    
+    state.selectedOverlayIds.forEach(selectedId => {
+      const overlay = state.overlays.find(o => o.id === selectedId)
+      if (!overlay) return
+      
+      overlaysToDelete.add(selectedId)
+      
+      // If deleting a clip, also delete its transitions
+      if (overlay.type === OverlayType.CLIP || overlay.type === OverlayType.SOUND || 
+          overlay.type === OverlayType.TEXT || overlay.type === OverlayType.IMAGE || 
+          overlay.type === OverlayType.CAPTION) {
+        if (overlay.transitionInId) {
+          overlaysToDelete.add(overlay.transitionInId)
+        }
+        if (overlay.transitionOutId) {
+          overlaysToDelete.add(overlay.transitionOutId)
+        }
+      }
+      
+      // If deleting a transition, we don't automatically delete the parent clip
+      // Only delete what's explicitly selected
+    })
+    
+    // Delete all overlays in a single batch operation for proper undo/redo
+    actions.deleteOverlays(Array.from(overlaysToDelete))
+    
+    // Clear selection since deleted overlays are no longer selected
+    actions.clearSelection()
+  }
   
   return (
     <div className="timeline-header">
@@ -49,6 +104,37 @@ const TimelineHeader: React.FC = () => {
           title="Skip to end"
         >
           <SkipForward size={16} />
+        </button>
+        
+        <div className="timeline-divider" />
+        
+        <button 
+          className="control-button"
+          onClick={actions.undo}
+          disabled={!canUndo}
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo2 size={16} />
+        </button>
+        
+        <button 
+          className="control-button"
+          onClick={actions.redo}
+          disabled={!canRedo}
+          title="Redo (Ctrl+Shift+Z)"
+        >
+          <Redo2 size={16} />
+        </button>
+        
+        <div className="timeline-divider" />
+        
+        <button 
+          className="control-button"
+          onClick={handleDeleteSelected}
+          disabled={state.selectedOverlayIds.length === 0}
+          title="Delete selected (Delete)"
+        >
+          <Trash2 size={16} />
         </button>
         
         <div className="time-display">

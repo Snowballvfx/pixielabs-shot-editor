@@ -78,7 +78,6 @@ body {
 .clip {
   position: absolute;
   height: 60px;
-  top: 10px;
   border-radius: 4px;
   cursor: grab;
   user-select: none;
@@ -125,6 +124,135 @@ body {
   border: 2px solid #2dd4bf;
 }
 
+/* Transition styles */
+.clip-transition-in {
+  /* horizontal gradient: right -> left (flipped) */
+  background: linear-gradient(270deg, 
+    rgba(255, 255, 255, 0.8) 0%, 
+    rgba(255, 255, 255, 0.25) 45%, 
+    rgba(255, 255, 255, 0.07) 100%);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  /* remain absolutely positioned like .clip to align vertically */
+  overflow: hidden;
+}
+
+.clip-transition-out {
+  /* horizontal gradient: left -> right (flipped) */
+  background: linear-gradient(90deg, 
+    rgba(255, 255, 255, 0.8) 0%, 
+    rgba(255, 255, 255, 0.25) 45%, 
+    rgba(255, 255, 255, 0.07) 100%);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  /* remain absolutely positioned like .clip to align vertically */
+  overflow: hidden;
+}
+
+/* Diagonal stripe pattern overlay for transitions */
+/* remove diagonal stripe overlays to emphasize horizontal gradient */
+
+/* Transition hover effects */
+.clip-transition-in:hover,
+.clip-transition-out:hover {
+  border-color: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.2);
+}
+
+.clip-transition-in.selected,
+.clip-transition-out.selected {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(255, 255, 255, 0.3);
+}
+
+/* Transition color matching with parent clips */
+.clip-clip-transition {
+  border-color: #357abd;
+}
+
+.clip-clip-transition.clip-transition-in {
+  background: linear-gradient(270deg, 
+    rgba(74, 144, 226, 0.8) 0%, 
+    rgba(74, 144, 226, 0.35) 45%, 
+    rgba(74, 144, 226, 0.12) 100%);
+}
+
+.clip-clip-transition.clip-transition-out {
+  background: linear-gradient(90deg, 
+    rgba(74, 144, 226, 0.8) 0%, 
+    rgba(74, 144, 226, 0.35) 45%, 
+    rgba(74, 144, 226, 0.12) 100%);
+}
+
+.clip-sound-transition {
+  border-color: #5ba517;
+}
+
+.clip-sound-transition.clip-transition-in {
+  background: linear-gradient(270deg, 
+    rgba(126, 211, 33, 0.8) 0%, 
+    rgba(126, 211, 33, 0.35) 45%, 
+    rgba(126, 211, 33, 0.12) 100%);
+}
+
+.clip-sound-transition.clip-transition-out {
+  background: linear-gradient(90deg, 
+    rgba(126, 211, 33, 0.8) 0%, 
+    rgba(126, 211, 33, 0.35) 45%, 
+    rgba(126, 211, 33, 0.12) 100%);
+}
+
+.clip-text-transition {
+  border-color: #d1890b;
+}
+
+.clip-text-transition.clip-transition-in {
+  background: linear-gradient(270deg, 
+    rgba(245, 166, 35, 0.8) 0%, 
+    rgba(245, 166, 35, 0.35) 45%, 
+    rgba(245, 166, 35, 0.12) 100%);
+}
+
+.clip-text-transition.clip-transition-out {
+  background: linear-gradient(90deg, 
+    rgba(245, 166, 35, 0.8) 0%, 
+    rgba(245, 166, 35, 0.35) 45%, 
+    rgba(245, 166, 35, 0.12) 100%);
+}
+
+.clip-image-transition {
+  border-color: #9013fe;
+}
+
+.clip-image-transition.clip-transition-in {
+  background: linear-gradient(270deg, 
+    rgba(189, 16, 224, 0.8) 0%, 
+    rgba(189, 16, 224, 0.35) 45%, 
+    rgba(189, 16, 224, 0.12) 100%);
+}
+
+.clip-image-transition.clip-transition-out {
+  background: linear-gradient(90deg, 
+    rgba(189, 16, 224, 0.8) 0%, 
+    rgba(189, 16, 224, 0.35) 45%, 
+    rgba(189, 16, 224, 0.12) 100%);
+}
+
+.clip-caption-transition {
+  border-color: #2dd4bf;
+}
+
+.clip-caption-transition.clip-transition-in {
+  background: linear-gradient(270deg, 
+    rgba(80, 227, 194, 0.8) 0%, 
+    rgba(80, 227, 194, 0.35) 45%, 
+    rgba(80, 227, 194, 0.12) 100%);
+}
+
+.clip-caption-transition.clip-transition-out {
+  background: linear-gradient(90deg, 
+    rgba(80, 227, 194, 0.8) 0%, 
+    rgba(80, 227, 194, 0.35) 45%, 
+    rgba(80, 227, 194, 0.12) 100%);
+}
+
 /* Resize handles */
 .resize-handle {
   position: absolute;
@@ -153,6 +281,17 @@ body {
   right: 0;
   border-top-right-radius: 4px;
   border-bottom-right-radius: 4px;
+}
+
+/* Transition resize handles - smaller and more subtle */
+.transition-resize {
+  background-color: rgba(255, 255, 255, 0.6);
+  width: 8px; /* match .resize-handle width */
+  border-radius: 1px;
+}
+
+.transition-resize:hover {
+  background-color: rgba(255, 255, 255, 0.8);
 }
 
 .clip.selected {
@@ -209,6 +348,23 @@ body {
 
 .control-button:active {
   background: #333;
+}
+
+.control-button:disabled {
+  background: #2a2a2a;
+  color: #666;
+  cursor: not-allowed;
+}
+
+.control-button:disabled:hover {
+  background: #2a2a2a;
+}
+
+.timeline-divider {
+  width: 1px;
+  height: 24px;
+  background-color: #555;
+  margin: 0 4px;
 }
 
 .time-display {

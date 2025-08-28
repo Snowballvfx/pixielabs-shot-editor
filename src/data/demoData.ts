@@ -12,7 +12,33 @@ export const demoOverlays: Overlay[] = [
     mediaStartTime: 0,
     volume: 1,
     muted: false,
-    selected: false
+    selected: false,
+    transitionInId: 'clip-1-transition-in',
+    transitionOutId: 'clip-1-transition-out'
+  },
+  
+  // Transition in for clip-1
+  {
+    id: 'clip-1-transition-in',
+    type: OverlayType.TRANSITION_IN,
+    startTime: 0, // for demo start at 0 since negative not supported
+    duration: 0.5,
+    row: 0,
+    selected: false,
+    parentClipId: 'clip-1',
+    transitionType: 'fade'
+  },
+  
+  // Transition out for clip-1
+  {
+    id: 'clip-1-transition-out',
+    type: OverlayType.TRANSITION_OUT,
+    startTime: 8, // starts when main clip ends
+    duration: 0.5,
+    row: 0,
+    selected: false,
+    parentClipId: 'clip-1',
+    transitionType: 'fade'
   },
   
   // Another video clip on track 0
@@ -26,35 +52,33 @@ export const demoOverlays: Overlay[] = [
     mediaStartTime: 2,
     volume: 0.8,
     muted: false,
-    selected: false
+    selected: false,
+    transitionInId: 'clip-2-transition-in',
+    transitionOutId: 'clip-2-transition-out'
   },
   
-  // Audio track on track 1
+  // Transition in for clip-2
   {
-    id: 'sound-1',
-    type: OverlayType.SOUND,
-    startTime: 0,
-    duration: 20,
-    row: 1,
-    src: '/demo/background-music.mp3',
-    mediaStartTime: 0,
-    volume: 0.3,
-    muted: false,
-    selected: false
+    id: 'clip-2-transition-in',
+    type: OverlayType.TRANSITION_IN,
+    startTime: 9.7, // clip start - duration
+    duration: 0.3,
+    row: 0,
+    selected: false,
+    parentClipId: 'clip-2',
+    transitionType: 'slide'
   },
   
-  // Sound effect on track 1
+  // Transition out for clip-2
   {
-    id: 'sound-2',
-    type: OverlayType.SOUND,
-    startTime: 8.5,
-    duration: 2,
-    row: 1,
-    src: '/demo/sound-effect.wav',
-    mediaStartTime: 0,
-    volume: 0.7,
-    muted: false,
-    selected: false
+    id: 'clip-2-transition-out',
+    type: OverlayType.TRANSITION_OUT,
+    startTime: 16, // clip end
+    duration: 0.3,
+    row: 0,
+    selected: false,
+    parentClipId: 'clip-2',
+    transitionType: 'slide'
   },
   
   // Text overlay on track 2
@@ -121,7 +145,33 @@ export const demoOverlays: Overlay[] = [
     mediaStartTime: 0,
     volume: 0.5,
     muted: true,
-    selected: false
+    selected: false,
+    transitionInId: 'clip-3-transition-in',
+    transitionOutId: 'clip-3-transition-out'
+  },
+  
+  // Transition in for clip-3
+  {
+    id: 'clip-3-transition-in',
+    type: OverlayType.TRANSITION_IN,
+    startTime: 2.6, // clip start - duration
+    duration: 0.4,
+    row: 4,
+    selected: false,
+    parentClipId: 'clip-3',
+    transitionType: 'wipe'
+  },
+  
+  // Transition out for clip-3
+  {
+    id: 'clip-3-transition-out',
+    type: OverlayType.TRANSITION_OUT,
+    startTime: 8, // clip end
+    duration: 0.4,
+    row: 4,
+    selected: false,
+    parentClipId: 'clip-3',
+    transitionType: 'wipe'
   }
 ]
 
