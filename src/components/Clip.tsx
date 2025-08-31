@@ -1,5 +1,5 @@
 import React from 'react'
-import { Overlay, OverlayType, SoundOverlay, TransitionInOverlay, TransitionOutOverlay } from '../types/overlays'
+import { Overlay, OverlayType, SoundOverlay, TransitionInOverlay, TransitionOutOverlay, MergedTransitionOverlay } from '../types/overlays'
 import { useTimeline } from '../contexts/TimelineContext'
 import { useClipInteraction } from '../hooks/useClipInteraction'
 import { useWaveform } from '../hooks/useWaveform'
@@ -22,6 +22,10 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
     if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
       const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
       return state.overlays.find(o => o.id === parentClipId)
+    } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
+      // For merged transitions, get the first clip for color matching
+      const fromClipId = (overlay as MergedTransitionOverlay).fromClipId
+      return state.overlays.find(o => o.id === fromClipId)
     }
     return null
   }
@@ -41,6 +45,9 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
     if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
       const parentTypeClass = parentClip ? `clip-${parentClip.type}` : 'clip-clip'
       typeClass = `${typeClass} ${parentTypeClass}-transition`
+    } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
+      const parentTypeClass = parentClip ? `clip-${parentClip.type}` : 'clip-clip'
+      typeClass = `${typeClass} ${parentTypeClass}-transition`
     }
     const selectedClass = overlay.selected ? 'selected' : ''
     const draggingClass = dragInfo?.overlayId === overlay.id ? 'dragging' : ''
@@ -51,15 +58,31 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
   const renderClipContent = () => {
     switch (overlay.type) {
       case OverlayType.TRANSITION_IN:
-        const transitionIn = overlay as TransitionInOverlay
         return (
           <div className="clip-content" />
         )
       
       case OverlayType.TRANSITION_OUT:
-        const transitionOut = overlay as TransitionOutOverlay
         return (
           <div className="clip-content" />
+        )
+      
+      case OverlayType.TRANSITION_MERGED:
+        const mergedTransition = overlay as MergedTransitionOverlay
+        return (
+          <div className="clip-content">
+            <div className="clip-title" style={{ fontSize: '8px', textAlign: 'center' }}>
+              Merged Transition
+            </div>
+            <div className="transition-info" style={{ 
+              fontSize: '6px', 
+              textAlign: 'center',
+              opacity: 0.8,
+              marginTop: '2px'
+            }}>
+              {mergedTransition.transitionType}
+            </div>
+          </div>
         )
       
       case OverlayType.SOUND:
@@ -208,7 +231,7 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
       
       {/* Resize handles - for clips and selective handles for transitions */}
       {overlay.type !== OverlayType.TRANSITION_IN && overlay.type !== OverlayType.TRANSITION_OUT ? (
-        // Regular clips get normal resize handles
+        // Regular clips and merged transitions get normal resize handles
         <>
           <div 
             className="resize-handle resize-handle-left"

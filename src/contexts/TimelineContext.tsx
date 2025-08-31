@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, ReactNode } from 'react'
-import { Overlay, TimelineState, DragInfo, TimelineSettings, HistoryState } from '../types/overlays'
+import { Overlay, TimelineState, DragInfo, TimelineSettings, HistoryState, MergedTransitionOverlay, OverlayType, TransitionInOverlay, TransitionOutOverlay } from '../types/overlays'
 import { demoOverlays } from '../data/demoData'
 
 
@@ -38,6 +38,10 @@ interface TimelineContextType {
     redo: () => void
     canUndo: () => boolean
     canRedo: () => boolean
+    
+    // Transition merge/split actions
+    mergeTransitions: (transitionOutId: string, transitionInId: string) => void
+    splitMergedTransition: (mergedTransitionId: string) => void
   }
 }
 
@@ -61,6 +65,8 @@ type TimelineAction =
   | { type: 'UPDATE_SETTINGS'; payload: Partial<TimelineSettings> }
   | { type: 'UNDO' }
   | { type: 'REDO' }
+  | { type: 'MERGE_TRANSITIONS'; payload: { transitionOutId: string; transitionInId: string } }
+  | { type: 'SPLIT_MERGED_TRANSITION'; payload: string }
 
 interface TimelineContextState {
   history: HistoryState
@@ -377,6 +383,90 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
         history: performRedo(state.history)
       }
     
+    case 'MERGE_TRANSITIONS': {
+      const { transitionOutId, transitionInId } = action.payload
+      const transitionOut = state.history.present.overlays.find(o => o.id === transitionOutId)
+      const transitionIn = state.history.present.overlays.find(o => o.id === transitionInId)
+      
+      if (!transitionOut || !transitionIn) return state
+      if (transitionOut.type !== OverlayType.TRANSITION_OUT || transitionIn.type !== OverlayType.TRANSITION_IN) return state
+      
+      // Create merged transition
+      const mergedTransition: MergedTransitionOverlay = {
+        id: `merged-${transitionOutId}-${transitionInId}`,
+        type: OverlayType.TRANSITION_MERGED,
+        startTime: transitionOut.startTime,
+        duration: transitionIn.startTime + transitionIn.duration - transitionOut.startTime,
+        row: transitionOut.row,
+        selected: false,
+        fromClipId: (transitionOut as TransitionOutOverlay).parentClipId,
+        toClipId: (transitionIn as TransitionInOverlay).parentClipId,
+        transitionType: (transitionOut as TransitionOutOverlay).transitionType
+      }
+      
+      // Remove individual transitions and add merged one
+      const updatedOverlays = state.history.present.overlays
+        .filter(o => o.id !== transitionOutId && o.id !== transitionInId)
+        .concat(mergedTransition as any)
+      
+      const newState = {
+        ...state.history.present,
+        overlays: updatedOverlays
+      }
+      
+      return {
+        ...state,
+        history: addToHistory(state.history, newState)
+      }
+    }
+    
+    case 'SPLIT_MERGED_TRANSITION': {
+      const mergedTransitionId = action.payload
+      const mergedTransition = state.history.present.overlays.find(o => o.id === mergedTransitionId) as MergedTransitionOverlay
+      
+      if (!mergedTransition || mergedTransition.type !== OverlayType.TRANSITION_MERGED) return state
+      
+      const splitPoint = mergedTransition.startTime + mergedTransition.duration / 2
+      
+      // Create new transition-out and transition-in
+      const newTransitionOut: TransitionOutOverlay = {
+        id: `${mergedTransition.fromClipId}-transition-out`,
+        type: OverlayType.TRANSITION_OUT,
+        startTime: mergedTransition.startTime,
+        duration: splitPoint - mergedTransition.startTime,
+        row: mergedTransition.row,
+        selected: false,
+        parentClipId: mergedTransition.fromClipId,
+        transitionType: mergedTransition.transitionType
+      }
+      
+      const newTransitionIn: TransitionInOverlay = {
+        id: `${mergedTransition.toClipId}-transition-in`,
+        type: OverlayType.TRANSITION_IN,
+        startTime: splitPoint,
+        duration: mergedTransition.startTime + mergedTransition.duration - splitPoint,
+        row: mergedTransition.row,
+        selected: false,
+        parentClipId: mergedTransition.toClipId,
+        transitionType: mergedTransition.transitionType
+      }
+      
+      // Remove merged transition and add split ones
+      const updatedOverlays = state.history.present.overlays
+        .filter(o => o.id !== mergedTransitionId)
+        .concat(newTransitionOut as any, newTransitionIn as any)
+      
+      const newState = {
+        ...state.history.present,
+        overlays: updatedOverlays
+      }
+      
+      return {
+        ...state,
+        history: addToHistory(state.history, newState)
+      }
+    }
+    
     default:
       return state
   }
@@ -416,7 +506,12 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
     undo: () => dispatch({ type: 'UNDO' }),
     redo: () => dispatch({ type: 'REDO' }),
     canUndo: () => canUndo(state.history),
-    canRedo: () => canRedo(state.history)
+    canRedo: () => canRedo(state.history),
+    
+    mergeTransitions: (transitionOutId: string, transitionInId: string) => 
+      dispatch({ type: 'MERGE_TRANSITIONS', payload: { transitionOutId, transitionInId } }),
+    splitMergedTransition: (mergedTransitionId: string) => 
+      dispatch({ type: 'SPLIT_MERGED_TRANSITION', payload: mergedTransitionId })
   }
   
   const contextValue: TimelineContextType = {

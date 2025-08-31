@@ -147,18 +147,32 @@ body {
   overflow: hidden;
 }
 
+.clip-transition-merged {
+  /* bidirectional gradient: fade in from both sides */
+  background: linear-gradient(90deg, 
+    rgba(255, 255, 255, 0.8) 0%, 
+    rgba(255, 255, 255, 0.4) 25%, 
+    rgba(255, 255, 255, 0.4) 75%, 
+    rgba(255, 255, 255, 0.8) 100%);
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  /* remain absolutely positioned like .clip to align vertically */
+  overflow: hidden;
+}
+
 /* Diagonal stripe pattern overlay for transitions */
 /* remove diagonal stripe overlays to emphasize horizontal gradient */
 
 /* Transition hover effects */
 .clip-transition-in:hover,
-.clip-transition-out:hover {
+.clip-transition-out:hover,
+.clip-transition-merged:hover {
   border-color: rgba(255, 255, 255, 0.9);
   box-shadow: 0 2px 8px rgba(255, 255, 255, 0.2);
 }
 
 .clip-transition-in.selected,
-.clip-transition-out.selected {
+.clip-transition-out.selected,
+.clip-transition-merged.selected {
   box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(255, 255, 255, 0.3);
 }
 
@@ -251,6 +265,47 @@ body {
     rgba(80, 227, 194, 0.8) 0%, 
     rgba(80, 227, 194, 0.35) 45%, 
     rgba(80, 227, 194, 0.12) 100%);
+}
+
+/* Merged transition color matching with parent clips */
+.clip-clip-transition.clip-transition-merged {
+  background: linear-gradient(90deg, 
+    rgba(74, 144, 226, 0.8) 0%, 
+    rgba(74, 144, 226, 0.4) 25%, 
+    rgba(74, 144, 226, 0.4) 75%, 
+    rgba(74, 144, 226, 0.8) 100%);
+}
+
+.clip-sound-transition.clip-transition-merged {
+  background: linear-gradient(90deg, 
+    rgba(126, 211, 33, 0.8) 0%, 
+    rgba(126, 211, 33, 0.4) 25%, 
+    rgba(126, 211, 33, 0.4) 75%, 
+    rgba(126, 211, 33, 0.8) 100%);
+}
+
+.clip-text-transition.clip-transition-merged {
+  background: linear-gradient(90deg, 
+    rgba(245, 166, 35, 0.8) 0%, 
+    rgba(245, 166, 35, 0.4) 25%, 
+    rgba(245, 166, 35, 0.4) 75%, 
+    rgba(245, 166, 35, 0.8) 100%);
+}
+
+.clip-image-transition.clip-transition-merged {
+  background: linear-gradient(90deg, 
+    rgba(189, 16, 224, 0.8) 0%, 
+    rgba(189, 16, 224, 0.4) 25%, 
+    rgba(189, 16, 224, 0.4) 75%, 
+    rgba(189, 16, 224, 0.8) 100%);
+}
+
+.clip-caption-transition.clip-transition-merged {
+  background: linear-gradient(90deg, 
+    rgba(80, 227, 194, 0.8) 0%, 
+    rgba(80, 227, 194, 0.4) 25%, 
+    rgba(80, 227, 194, 0.4) 75%, 
+    rgba(80, 227, 194, 0.8) 100%);
 }
 
 /* Resize handles */

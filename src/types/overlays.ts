@@ -5,7 +5,8 @@ export enum OverlayType {
   IMAGE = 'image',
   CAPTION = 'caption',
   TRANSITION_IN = 'transition-in',
-  TRANSITION_OUT = 'transition-out'
+  TRANSITION_OUT = 'transition-out',
+  TRANSITION_MERGED = 'transition-merged'
 }
 
 export interface BaseOverlay {
@@ -98,7 +99,14 @@ export interface TransitionOutOverlay extends BaseOverlay {
   transitionType: 'fade' | 'slide' | 'wipe' | 'dissolve'
 }
 
-export type Overlay = ClipOverlay | SoundOverlay | TextOverlay | ImageOverlay | CaptionOverlay | TransitionInOverlay | TransitionOutOverlay
+export interface MergedTransitionOverlay extends BaseOverlay {
+  type: OverlayType.TRANSITION_MERGED
+  fromClipId: string // The clip with transition-out
+  toClipId: string   // The clip with transition-in
+  transitionType: 'fade' | 'slide' | 'wipe' | 'dissolve'
+}
+
+export type Overlay = ClipOverlay | SoundOverlay | TextOverlay | ImageOverlay | CaptionOverlay | TransitionInOverlay | TransitionOutOverlay | MergedTransitionOverlay
 
 export interface TimelineState {
   overlays: Overlay[]

@@ -132,46 +132,6 @@ export const demoOverlays: Overlay[] = [
     height: 100,
     opacity: 0.8,
     selected: false
-  },
-  
-  // Video clip on track 4 (picture-in-picture)
-  {
-    id: 'clip-3',
-    type: OverlayType.CLIP,
-    startTime: 3,
-    duration: 5,
-    row: 4,
-    src: '/demo/pip-video.mp4',
-    mediaStartTime: 0,
-    volume: 0.5,
-    muted: true,
-    selected: false,
-    transitionInId: 'clip-3-transition-in',
-    transitionOutId: 'clip-3-transition-out'
-  },
-  
-  // Transition in for clip-3
-  {
-    id: 'clip-3-transition-in',
-    type: OverlayType.TRANSITION_IN,
-    startTime: 2.6, // clip start - duration
-    duration: 0.4,
-    row: 4,
-    selected: false,
-    parentClipId: 'clip-3',
-    transitionType: 'wipe'
-  },
-  
-  // Transition out for clip-3
-  {
-    id: 'clip-3-transition-out',
-    type: OverlayType.TRANSITION_OUT,
-    startTime: 8, // clip end
-    duration: 0.4,
-    row: 4,
-    selected: false,
-    parentClipId: 'clip-3',
-    transitionType: 'wipe'
   }
 ]
 
