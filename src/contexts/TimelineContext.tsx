@@ -389,19 +389,39 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
       const transitionIn = state.history.present.overlays.find(o => o.id === transitionInId)
       
       if (!transitionOut || !transitionIn) return state
-      if (transitionOut.type !== OverlayType.TRANSITION_OUT || transitionIn.type !== OverlayType.TRANSITION_IN) return state
+      if ((transitionOut.type !== OverlayType.TRANSITION_OUT && transitionOut.type !== OverlayType.TRANSITION_IN) ||
+          (transitionIn.type !== OverlayType.TRANSITION_OUT && transitionIn.type !== OverlayType.TRANSITION_IN)) return state
+
+      // Identify left/right clips by time to make logic agnostic to which tag is in/out
+      const outParentId = (transitionOut as any).parentClipId
+      const inParentId = (transitionIn as any).parentClipId
+      const outParentClip = state.history.present.overlays.find(o => o.id === outParentId && o.type === OverlayType.CLIP)
+      const inParentClip = state.history.present.overlays.find(o => o.id === inParentId && o.type === OverlayType.CLIP)
+      if (!outParentClip || !inParentClip) return state
+
+      const leftClip = outParentClip.startTime <= inParentClip.startTime ? outParentClip : inParentClip
+      const rightClip = leftClip.id === outParentClip.id ? inParentClip : outParentClip
+
+      // Compute merged start and end as the span covering both transitions
+      const startA = transitionOut.startTime
+      const endA = transitionOut.startTime + transitionOut.duration
+      const startB = transitionIn.startTime
+      const endB = transitionIn.startTime + transitionIn.duration
+      const mergedStart = Math.min(startA, startB)
+      const mergedEnd = Math.max(endA, endB)
+      const mergedDuration = Math.max(0.05, mergedEnd - mergedStart)
       
       // Create merged transition
       const mergedTransition: MergedTransitionOverlay = {
         id: `merged-${transitionOutId}-${transitionInId}`,
         type: OverlayType.TRANSITION_MERGED,
-        startTime: transitionOut.startTime,
-        duration: transitionIn.startTime + transitionIn.duration - transitionOut.startTime,
+        startTime: mergedStart,
+        duration: mergedDuration,
         row: transitionOut.row,
         selected: false,
-        fromClipId: (transitionOut as TransitionOutOverlay).parentClipId,
-        toClipId: (transitionIn as TransitionInOverlay).parentClipId,
-        transitionType: (transitionOut as TransitionOutOverlay).transitionType
+        fromClipId: leftClip.id,
+        toClipId: rightClip.id,
+        transitionType: (transitionOut as any).transitionType || (transitionIn as any).transitionType || 'fade'
       }
       
       // Remove individual transitions and add merged one

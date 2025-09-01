@@ -13,6 +13,7 @@ export const demoOverlays: Overlay[] = [
     volume: 1,
     muted: false,
     selected: false,
+    label: 'Video 1',
     transitionInId: 'clip-1-transition-in',
     transitionOutId: 'clip-1-transition-out'
   },
@@ -53,6 +54,7 @@ export const demoOverlays: Overlay[] = [
     volume: 0.8,
     muted: false,
     selected: false,
+    label: 'Video 2',
     transitionInId: 'clip-2-transition-in',
     transitionOutId: 'clip-2-transition-out'
   },
@@ -126,6 +128,7 @@ export const demoOverlays: Overlay[] = [
     duration: 3,
     row: 3,
     src: '/demo/logo.png',
+    label: 'Logo',
     x: 50,
     y: 50,
     width: 100,

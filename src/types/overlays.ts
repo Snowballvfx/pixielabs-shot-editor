@@ -16,6 +16,7 @@ export interface BaseOverlay {
   duration: number
   row: number
   selected: boolean
+  label?: string
   parentClipId?: string // For transitions, the ID of the parent clip
   transitionInId?: string // For clips, the ID of the transition-in tag
   transitionOutId?: string // For clips, the ID of the transition-out tag

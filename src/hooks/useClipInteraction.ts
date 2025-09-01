@@ -18,20 +18,151 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   const stateRef = useRef(state)
   stateRef.current = state // Always keep the ref updated with current state
   
+  // Post-move processor: snap clip if overlapping, then check for transition merges.
+  // If a snap occurred, re-run once to process merges after the snap (bounded by maxIterations)
+  const processAfterMove = (overlayId: string, iteration = 0) => {
+    if (iteration > 1)
+      return
+    // Defer to ensure all batched updates have applied
+    setTimeout(() => {
+      const currentState = stateRef.current
+      const currentOverlay = currentState.overlays.find(o => o.id === overlayId)
+      if (!currentOverlay)
+        return
+
+      let snapped = false
+      if (currentOverlay.type === OverlayType.CLIP) {
+        const snappedTime = snapOverlappingClip(currentOverlay, currentState)
+        if (snappedTime !== currentOverlay.startTime) {
+          const delta = snapToGrid(snappedTime - currentOverlay.startTime)
+          const relatedOverlays = getRelatedOverlays(currentOverlay)
+          
+          // Update clips first
+          relatedOverlays.forEach(rel => {
+            if (rel.type === OverlayType.CLIP) {
+              const newStart = snapToGrid(rel.startTime + delta)
+              actions.updateOverlay(rel.id, { startTime: newStart })
+            }
+          })
+          
+          // Then update transitions relative to their new clip positions
+          setTimeout(() => {
+            const freshState = stateRef.current
+            console.log('processAfterMove: updating transition positions after snap')
+            relatedOverlays.forEach(rel => {
+              if (rel.type === OverlayType.TRANSITION_IN || rel.type === OverlayType.TRANSITION_OUT) {
+                const parentClipId = (rel as TransitionInOverlay | TransitionOutOverlay).parentClipId
+                const parentClip = freshState.overlays.find(o => o.id === parentClipId)
+                if (parentClip) {
+                  let newTransitionStart
+                  if (rel.type === OverlayType.TRANSITION_IN) {
+                    newTransitionStart = parentClip.startTime - rel.duration
+                  } else {
+                    newTransitionStart = parentClip.startTime + parentClip.duration
+                  }
+                  console.log('processAfterMove: updating transition', rel.id, 'from', rel.startTime, 'to', snapToGrid(newTransitionStart))
+                  actions.updateOverlay(rel.id, { startTime: snapToGrid(newTransitionStart), row: parentClip.row })
+                }
+              } else if (rel.type === OverlayType.TRANSITION_MERGED) {
+                const merged = rel as MergedTransitionOverlay
+                const fromClip = freshState.overlays.find(o => o.id === merged.fromClipId)
+                if (fromClip) {
+                  const mergedStart = snapToGrid(fromClip.startTime + fromClip.duration)
+                  console.log('processAfterMove: updating merged transition', merged.id, 'to', mergedStart)
+                  actions.updateOverlay(merged.id, { startTime: mergedStart, row: fromClip.row })
+                }
+              }
+            })
+          }, 0)
+          
+          snapped = true
+        }
+      }
+
+      // After snap (or even if no snap), check transitions in a new tick to read fresh positions
+      // Use longer delay if we snapped to ensure all transition updates are complete
+      const delay = snapped ? 20 : 0
+      setTimeout(() => {
+        const freshState = stateRef.current
+        const freshOverlay = freshState.overlays.find(o => o.id === overlayId) || currentOverlay
+        console.log('processAfterMove: transition checks for overlay', overlayId, 'after snap:', snapped)
+
+        const overlapCandidate = checkTransitionOverlaps(freshOverlay, freshState)
+        if (overlapCandidate) {
+          console.log('processAfterMove: transition overlap -> merging', overlapCandidate)
+          actions.mergeTransitions(overlapCandidate.transitionOutId, overlapCandidate.transitionInId)
+        }
+
+        const mergeCandidate = checkForTransitionMerge(freshOverlay, freshState)
+        if (mergeCandidate) {
+          console.log('processAfterMove: adjacent transition merge -> merging', mergeCandidate)
+          actions.mergeTransitions(mergeCandidate.transitionOutId, mergeCandidate.transitionInId)
+        }
+
+        // If we snapped, run once more to process merges after positions settled
+        if (snapped) {
+          processAfterMove(overlayId, iteration + 1)
+        }
+      }, delay)
+    }, 0)
+  }
+
+  // Check for any transition overlaps (with other transitions or clips)
+  const checkTransitionOverlaps = useCallback((changedOverlay: Overlay, currentState: typeof state) => {
+    if (changedOverlay.type !== OverlayType.TRANSITION_IN && 
+        changedOverlay.type !== OverlayType.TRANSITION_OUT && 
+        changedOverlay.type !== OverlayType.TRANSITION_MERGED) {
+      return null
+    }
+    
+    const transitionEnd = changedOverlay.startTime + changedOverlay.duration
+    
+    // Find any overlapping transitions on the same row
+    const overlappingTransitions = currentState.overlays.filter(other => {
+      if (other.id === changedOverlay.id || other.row !== changedOverlay.row)
+        return false
+      if (other.type !== OverlayType.TRANSITION_IN && 
+          other.type !== OverlayType.TRANSITION_OUT && 
+          other.type !== OverlayType.TRANSITION_MERGED) return false
+      
+      const otherEnd = other.startTime + other.duration
+      // Check for overlap
+      return !(transitionEnd <= other.startTime || changedOverlay.startTime >= otherEnd)
+    })
+    
+    if (overlappingTransitions.length > 0) {
+      // For now, return the first overlapping transition for potential merge
+      const firstOverlap = overlappingTransitions[0]
+      if (changedOverlay.type === OverlayType.TRANSITION_OUT && firstOverlap.type === OverlayType.TRANSITION_IN) {
+        return { transitionOutId: changedOverlay.id, transitionInId: firstOverlap.id }
+      } else if (changedOverlay.type === OverlayType.TRANSITION_IN && firstOverlap.type === OverlayType.TRANSITION_OUT) {
+        return { transitionOutId: firstOverlap.id, transitionInId: changedOverlay.id }
+      }
+    }
+    
+    return null
+  }, [])
+
   // Helper: check for transition merge conditions around a specific overlay only
   const checkForTransitionMerge = useCallback((changedOverlay: Overlay, currentState: typeof state) => {
+    console.log('checkForTransitionMerge: Checking overlay', changedOverlay.id, 'type:', changedOverlay.type)
+    
     // Find base clip related to the changed overlay
     const getBaseClip = (o: Overlay) => {
-      if (o.type === OverlayType.CLIP) return o
+      if (o.type === OverlayType.CLIP)
+         return o
       if (o.type === OverlayType.TRANSITION_IN || o.type === OverlayType.TRANSITION_OUT) {
         const parentClipId = (o as TransitionInOverlay | TransitionOutOverlay).parentClipId
         return currentState.overlays.find(oo => oo.id === parentClipId && oo.type === OverlayType.CLIP)
       }
-      if (o.type === OverlayType.TRANSITION_MERGED) return null
+      if (o.type === OverlayType.TRANSITION_MERGED)
+         return null
       return null
     }
     const baseClip = getBaseClip(changedOverlay)
-    if (!baseClip) return null
+    console.log('checkForTransitionMerge: Base clip found:', baseClip?.id || 'none')
+    if (!baseClip)
+       return null
 
     // Utility helpers
     const clipsOnRow = currentState.overlays
@@ -39,7 +170,8 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       .sort((a, b) => a.startTime - b.startTime)
 
     const baseIndex = clipsOnRow.findIndex(c => c.id === baseClip.id)
-    if (baseIndex === -1) return null
+    if (baseIndex === -1)
+       return null
 
     const getTransitionOut = (clipId: string) => currentState.overlays.find(o => o.id === (currentState.overlays.find(c => c.id === clipId) as any)?.transitionOutId)
     const getTransitionIn = (clipId: string) => currentState.overlays.find(o => o.id === (currentState.overlays.find(c => c.id === clipId) as any)?.transitionInId)
@@ -51,31 +183,44 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
 
     // Check right neighbor (baseClip -> nextClip)
     const nextClip = clipsOnRow[baseIndex + 1]
+    console.log('checkForTransitionMerge: Checking right neighbor:', nextClip?.id || 'none')
     if (nextClip && !hasMergedBetween(baseClip.id, nextClip.id)) {
-      const tOut = getTransitionOut(baseClip.id)
-      const tIn = getTransitionIn(nextClip.id)
-      if (tOut && tIn) {
-        const tOutEnd = tOut.startTime + tOut.duration
-        const tInStart = tIn.startTime
-        // Must overlap or abut and be adjacent (no clips strictly between them)
-        const noClipBetween = clipsOnRow.filter(c => c.startTime > baseClip.startTime && c.startTime < nextClip.startTime).length === 0
-        if (noClipBetween && tOut.row === tIn.row && tOutEnd >= tInStart) {
-          return { transitionOutId: tOut.id, transitionInId: tIn.id }
+      // Only merge left clip's transition-out with right clip's transition-in
+      const leftOut = getTransitionOut(baseClip.id)
+      const rightIn = getTransitionIn(nextClip.id)
+      console.log('checkForTransitionMerge: Found transitions - leftOut:', leftOut?.id || 'none', 'rightIn:', rightIn?.id || 'none')
+      const noClipBetween = clipsOnRow.filter(c => c.startTime > baseClip.startTime && c.startTime < nextClip.startTime).length === 0
+      if (noClipBetween && leftOut && rightIn) {
+        const leftOutEnd = leftOut.startTime + leftOut.duration
+        const rightInStart = rightIn.startTime
+        console.log('checkForTransitionMerge: leftOut/rightIn timing ->', leftOutEnd, rightInStart, 'overlap?', rightInStart <= leftOutEnd)
+        console.log('checkForTransitionMerge: leftOut details ->', leftOut.startTime, '+', leftOut.duration, '=', leftOutEnd)
+        console.log('checkForTransitionMerge: rightIn details ->', rightIn.startTime)
+        if (rightInStart <= leftOutEnd) {
+          console.log('checkForTransitionMerge: MATCH (leftOut-rightIn)')
+          return { transitionOutId: leftOut.id, transitionInId: rightIn.id }
         }
       }
     }
 
     // Check left neighbor (prevClip -> baseClip)
     const prevClip = clipsOnRow[baseIndex - 1]
+    console.log('checkForTransitionMerge: Checking left neighbor:', prevClip?.id || 'none')
     if (prevClip && !hasMergedBetween(prevClip.id, baseClip.id)) {
-      const tOut = getTransitionOut(prevClip.id)
-      const tIn = getTransitionIn(baseClip.id)
-      if (tOut && tIn) {
-        const tOutEnd = tOut.startTime + tOut.duration
-        const tInStart = tIn.startTime
-        const noClipBetween = clipsOnRow.filter(c => c.startTime > prevClip.startTime && c.startTime < baseClip.startTime).length === 0
-        if (noClipBetween && tOut.row === tIn.row && tOutEnd >= tInStart) {
-          return { transitionOutId: tOut.id, transitionInId: tIn.id }
+      // Only merge left (prevClip) out with baseClip in
+      const leftOut = getTransitionOut(prevClip.id)
+      const rightIn = getTransitionIn(baseClip.id)
+      console.log('checkForTransitionMerge: Found transitions (left neighbor) - leftOut:', leftOut?.id || 'none', 'rightIn:', rightIn?.id || 'none')
+      const noClipBetween = clipsOnRow.filter(c => c.startTime > prevClip.startTime && c.startTime < baseClip.startTime).length === 0
+      if (noClipBetween && leftOut && rightIn) {
+        const leftOutEnd = leftOut.startTime + leftOut.duration
+        const rightInStart = rightIn.startTime
+        console.log('checkForTransitionMerge: leftOut/rightIn timing ->', leftOutEnd, rightInStart, 'overlap?', rightInStart <= leftOutEnd)
+        console.log('checkForTransitionMerge: leftOut details ->', leftOut.startTime, '+', leftOut.duration, '=', leftOutEnd)
+        console.log('checkForTransitionMerge: rightIn details ->', rightIn.startTime)
+        if (rightInStart <= leftOutEnd) {
+          console.log('checkForTransitionMerge: MATCH (leftOut-rightIn) [left neighbor]')
+          return { transitionOutId: leftOut.id, transitionInId: rightIn.id }
         }
       }
     }
@@ -98,10 +243,14 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         // Find sibling transition
         if (overlay.type === OverlayType.TRANSITION_IN && parentClip.transitionOutId) {
           const siblingTransition = state.overlays.find(o => o.id === parentClip.transitionOutId)
-          if (siblingTransition) related.push(siblingTransition)
+          if (siblingTransition) {
+            related.push(siblingTransition)
+          }
         } else if (overlay.type === OverlayType.TRANSITION_OUT && parentClip.transitionInId) {
           const siblingTransition = state.overlays.find(o => o.id === parentClip.transitionInId)
-          if (siblingTransition) related.push(siblingTransition)
+          if (siblingTransition) {
+            related.push(siblingTransition)
+          }
         }
       }
     } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
@@ -114,33 +263,45 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         related.push(fromClip)
         if ((fromClip as any).transitionInId) {
           const tIn = state.overlays.find(o => o.id === (fromClip as any).transitionInId)
-          if (tIn) related.push(tIn)
+          if (tIn) {
+            related.push(tIn)
+          }
         }
         if ((fromClip as any).transitionOutId) {
           const tOut = state.overlays.find(o => o.id === (fromClip as any).transitionOutId)
-          if (tOut) related.push(tOut)
+          if (tOut) {
+            related.push(tOut)
+          }
         }
       }
       if (toClip) {
         related.push(toClip)
         if ((toClip as any).transitionInId) {
           const tIn = state.overlays.find(o => o.id === (toClip as any).transitionInId)
-          if (tIn) related.push(tIn)
+          if (tIn) {
+            related.push(tIn)
+          }
         }
         if ((toClip as any).transitionOutId) {
           const tOut = state.overlays.find(o => o.id === (toClip as any).transitionOutId)
-          if (tOut) related.push(tOut)
+          if (tOut) {
+            related.push(tOut)
+          }
         }
       }
     } else {
       // For clips, find their transition overlays
       if (overlay.transitionInId) {
         const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
-        if (transitionIn) related.push(transitionIn)
+        if (transitionIn) {
+          related.push(transitionIn)
+        }
       }
       if (overlay.transitionOutId) {
         const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
-        if (transitionOut) related.push(transitionOut)
+        if (transitionOut) {
+          related.push(transitionOut)
+        }
       }
 
       // If this clip participates in a merged transition, also include the other clip and merged overlay
@@ -155,11 +316,15 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           // Include other clip's transitions so they stay attached while dragging either clip
           if ((otherClip as any).transitionInId) {
             const otherIn = state.overlays.find(o => o.id === (otherClip as any).transitionInId)
-            if (otherIn) related.push(otherIn)
+            if (otherIn) {
+              related.push(otherIn)
+            }
           }
-          if ((otherClip as any).transitionOutId) {
-            const otherOut = state.overlays.find(o => o.id === (otherClip as any).transitionOutId)
-            if (otherOut) related.push(otherOut)
+                      if ((otherClip as any).transitionOutId) {
+              const otherOut = state.overlays.find(o => o.id === (otherClip as any).transitionOutId)
+              if (otherOut) {
+                related.push(otherOut)
+              }
           }
         }
       }
@@ -180,19 +345,25 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   
   // Snap time to grid if enabled
   const snapToGrid = useCallback((time: number): number => {
-    if (!settings.snapToGrid) return time
+    if (!settings.snapToGrid)
+      return time
     return Math.round(time / settings.gridSize) * settings.gridSize
   }, [settings.snapToGrid, settings.gridSize])
   
-  // Check for collisions with other overlays (excluding related overlays in the group)
+  // Check for collisions with other overlays (only for transitions - clips can overlap)
   const checkCollision = useCallback((overlay: Overlay, newStartTime: number, newDuration?: number): boolean => {
+    // Allow clips to overlap during drag - only check collisions for transitions
+    if (overlay.type === OverlayType.CLIP)
+       return false
+    
     const duration = newDuration ?? overlay.duration
     const endTime = newStartTime + duration
     const relatedOverlays = getRelatedOverlays(overlay)
     const relatedIds = new Set(relatedOverlays.map(o => o.id))
     
     return state.overlays.some(other => {
-      if (relatedIds.has(other.id) || other.row !== overlay.row) return false
+      if (relatedIds.has(other.id) || other.row !== overlay.row)
+        return false
       
       const otherEndTime = other.startTime + other.duration
       return !(endTime <= other.startTime || newStartTime >= otherEndTime)
@@ -206,27 +377,84 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     const maxAttempts = 100
     
     // Try the target position first
-    if (!checkCollision(overlay, testTime)) {
+    if (!checkCollision(overlay, testTime))
       return snapToGrid(testTime)
-    }
     
     // Try positions to the right and left alternately
     for (let i = 1; i <= maxAttempts; i++) {
       const rightTime = targetTime + (step * i)
       const leftTime = targetTime - (step * i)
       
-      if (rightTime >= 0 && !checkCollision(overlay, rightTime)) {
+      if (rightTime >= 0 && !checkCollision(overlay, rightTime))
         return snapToGrid(rightTime)
-      }
       
-      if (leftTime >= 0 && !checkCollision(overlay, leftTime)) {
+      if (leftTime >= 0 && !checkCollision(overlay, leftTime))
         return snapToGrid(leftTime)
-      }
     }
     
     // If no valid position found, return original position
     return overlay.startTime
   }, [checkCollision, snapToGrid, settings.gridSize])
+
+  // Snap overlapping clips to nearest neighbor edge
+  const snapOverlappingClip = useCallback((overlay: Overlay, currentState: typeof state): number => {
+    if (overlay.type !== OverlayType.CLIP)
+      return overlay.startTime
+    
+    const overlayEnd = overlay.startTime + overlay.duration
+    const relatedOverlays = getRelatedOverlays(overlay)
+    const relatedIds = new Set(relatedOverlays.map(o => o.id))
+    
+    console.log('Checking overlaps for clip:', overlay.id, 'position:', overlay.startTime, 'to', overlayEnd, 'on row:', overlay.row)
+    console.log('Related IDs to exclude:', Array.from(relatedIds))
+    
+    // Find overlapping clips on the same row (excluding related overlays)
+    const overlappingClips = currentState.overlays.filter(other => {
+      if (relatedIds.has(other.id) || other.row !== overlay.row || other.type !== OverlayType.CLIP)
+        return false
+      
+      const otherEnd = other.startTime + other.duration
+      const hasOverlap = !(overlayEnd <= other.startTime || overlay.startTime >= otherEnd)
+      
+      console.log('Checking against clip:', other.id, 'position:', other.startTime, 'to', otherEnd, 'overlap:', hasOverlap)
+      
+      return hasOverlap
+    })
+    
+    console.log('Found overlapping clips:', overlappingClips.length, overlappingClips.map(c => c.id))
+    
+    if (overlappingClips.length === 0)
+      return overlay.startTime
+    
+    // Find the closest snap position for each overlapping clip
+    let bestSnapTime = overlay.startTime
+    let minDistance = Infinity
+    
+    overlappingClips.forEach(other => {
+      const otherEnd = other.startTime + other.duration
+      
+      // Option 1: Snap to left of other clip
+      const snapLeft = other.startTime - overlay.duration
+      const distanceLeft = Math.abs(snapLeft - overlay.startTime)
+      
+      // Option 2: Snap to right of other clip
+      const snapRight = otherEnd
+      const distanceRight = Math.abs(snapRight - overlay.startTime)
+      
+      // Choose the closest option
+      if (snapLeft >= 0 && distanceLeft < minDistance) {
+        minDistance = distanceLeft
+        bestSnapTime = snapLeft
+      }
+      
+      if (distanceRight < minDistance) {
+        minDistance = distanceRight
+        bestSnapTime = snapRight
+      }
+    })
+    
+    return snapToGrid(bestSnapTime)
+  }, [getRelatedOverlays, snapToGrid])
   
   const handleMouseDown = useCallback((event: React.MouseEvent, overlay: Overlay) => {
     event.preventDefault()
@@ -234,7 +462,8 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     
     // Get the clip element (not the resize handle)
     const clipElement = document.getElementById(`overlay-${overlay.id}`)
-    if (!clipElement) return
+    if (!clipElement)
+      return
     
     const clipRect = clipElement.getBoundingClientRect()
     const clickX = event.clientX - clipRect.left
@@ -311,7 +540,8 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         if (currentDragInfo.dragType === 'move') {
           // Determine anchor for group move: clip itself, or parent clip for transitions, or fromClip for merged
           const anchorOverlay = (() => {
-            if (overlay.type === OverlayType.CLIP) return overlay
+            if (overlay.type === OverlayType.CLIP)
+              return overlay
             if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
               const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
               return state.overlays.find(o => o.id === parentClipId) || overlay
@@ -326,7 +556,10 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           // Use the current anchor position to compute a valid incremental delta
           const anchorCurrent = state.overlays.find(o => o.id === anchorOverlay.id) || anchorOverlay
           const anchorTarget = Math.max(0, anchorCurrent.startTime + deltaTime)
-          const validAnchorStart = findValidPosition(anchorCurrent, anchorTarget)
+          // For clips, allow overlaps during drag - for transitions, use collision detection
+          const validAnchorStart = anchorCurrent.type === OverlayType.CLIP 
+            ? snapToGrid(anchorTarget) 
+            : findValidPosition(anchorCurrent, anchorTarget)
           const deltaSinceLast = snapToGrid(validAnchorStart - anchorCurrent.startTime)
 
           // Move all related overlays by the same incremental delta to avoid stale state reads
@@ -484,14 +717,8 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       if (localIsDragging) {
         actions.commitDragHistory()
         
-        // Check for transition merge conditions after drag near this overlay
-        // Use stateRef to get the current state after all updates have been applied
-        setTimeout(() => {
-          const mergeCandidate = checkForTransitionMerge(overlay, stateRef.current)
-          if (mergeCandidate) {
-            actions.mergeTransitions(mergeCandidate.transitionOutId, mergeCandidate.transitionInId)
-          }
-        }, 0)
+        // Run post-move processing that may re-run once after snapping
+        processAfterMove(overlay.id)
       }
       
       localIsDragging = false
@@ -511,13 +738,17 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     findValidPosition,
     checkCollision,
     snapToGrid,
+    snapOverlappingClip,
+    getRelatedOverlays,
+    checkTransitionOverlaps,
     checkForTransitionMerge,
     actions,
     options
   ])
   
   const handleClick = useCallback((event: React.MouseEvent, overlay: Overlay) => {
-    if (isDragging) return
+    if (isDragging)
+      return
     
     event.stopPropagation()
     
@@ -532,10 +763,12 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   }, [isDragging, actions, options])
   
   const handleTimelineMouseDown = useCallback((event: React.MouseEvent) => {
-    if (isDragging) return
+    if (isDragging)
+      return
     
     const timelineElement = timelineRef.current
-    if (!timelineElement) return
+    if (!timelineElement)
+      return
     
     const rect = timelineElement.getBoundingClientRect()
     const clickX = event.clientX - rect.left - 60 // Account for track label width
@@ -547,7 +780,8 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     actions.clearSelection()
     
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isTimelineScrubbing || !timelineElement) return
+      if (!isTimelineScrubbing || !timelineElement)
+        return
       
       const rect = timelineElement.getBoundingClientRect()
       const moveX = e.clientX - rect.left - 60
@@ -583,17 +817,21 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   }, [timeToPixel])
   
   const getCursor = useCallback((overlay: Overlay, mouseX: number) => {
-    if (isDragging) return 'grabbing'
+    if (isDragging)
+      return 'grabbing'
     
     const overlayElement = document.getElementById(`overlay-${overlay.id}`)
-    if (!overlayElement) return 'grab'
+    if (!overlayElement)
+      return 'grab'
     
     const rect = overlayElement.getBoundingClientRect()
     const relativeX = mouseX - rect.left
     const resizeHandleWidth = 8
     
-    if (relativeX <= resizeHandleWidth) return 'ew-resize'
-    if (relativeX >= rect.width - resizeHandleWidth) return 'ew-resize'
+    if (relativeX <= resizeHandleWidth)
+      return 'ew-resize'
+    if (relativeX >= rect.width - resizeHandleWidth)
+      return 'ew-resize'
     return 'grab'
   }, [isDragging])
   

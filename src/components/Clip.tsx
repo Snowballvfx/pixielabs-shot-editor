@@ -131,9 +131,11 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
       case OverlayType.CLIP:
         return (
           <div className="clip-content">
-            <div className="clip-title" style={{ fontSize: '10px' }}>
-              Video Clip
-            </div>
+            {overlay.label && (
+              <div className="clip-title" style={{ fontSize: '10px' }}>
+                {overlay.label}
+              </div>
+            )}
             <div className="clip-preview" style={{ 
               width: '100%', 
               height: '40px', 
@@ -153,11 +155,8 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
       case OverlayType.TEXT:
         return (
           <div className="clip-content">
-            <div className="clip-title" style={{ fontSize: '10px' }}>
-              Text
-            </div>
             <div className="text-preview" style={{ 
-              fontSize: '8px',
+              fontSize: '12px',
               opacity: 0.8,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
@@ -171,9 +170,11 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
       case OverlayType.IMAGE:
         return (
           <div className="clip-content">
-            <div className="clip-title" style={{ fontSize: '10px' }}>
-              Image
-            </div>
+            {overlay.label && (
+              <div className="clip-title" style={{ fontSize: '10px' }}>
+                {overlay.label}
+              </div>
+            )}
             <div className="image-preview" style={{ 
               width: '100%', 
               height: '40px', 
