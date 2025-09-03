@@ -31,6 +31,9 @@ const TimelineTracks: React.FC = () => {
   const minTracks = 4 // Always show at least 4 tracks
   const trackCount = Math.max(minTracks, maxRow + 1)
   
+  // Add vertical space above Track 1 to avoid overlapping time indicators
+  const tracksTopOffset = 18
+  
   // Generate timeline grid background
   const timelineWidth = state.duration * settings.pixelsPerSecond * state.zoom
   const gridLines: React.ReactElement[] = []
@@ -90,7 +93,7 @@ const TimelineTracks: React.FC = () => {
       style={{
         position: 'relative',
         width: `${Math.max(timelineWidth, 800)}px`,
-        minHeight: `${trackCount * settings.trackHeight}px`,
+        minHeight: `${tracksTopOffset + trackCount * settings.trackHeight}px`,
         backgroundColor: '#1e1e1e',
         cursor: 'crosshair'
       }}
@@ -101,13 +104,18 @@ const TimelineTracks: React.FC = () => {
       </div>
       
       {/* Tracks */}
-      {Array.from({ length: trackCount }, (_, index) => (
-        <Track
-          key={index}
-          rowIndex={index}
-          overlays={trackData[index] || []}
-        />
-      ))}
+      <div
+        className="timeline-tracks-wrapper"
+        style={{ position: 'absolute', top: `${tracksTopOffset}px`, left: 0, right: 0 }}
+      >
+        {Array.from({ length: trackCount }, (_, index) => (
+          <Track
+            key={index}
+            rowIndex={index}
+            overlays={trackData[index] || []}
+          />
+        ))}
+      </div>
     </div>
   )
 }

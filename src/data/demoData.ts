@@ -14,6 +14,10 @@ export const demoOverlays: Overlay[] = [
     muted: false,
     selected: false,
     label: 'Video 1',
+    length: 15, // Original video length in seconds
+    speed: 1.0, // Normal playback speed
+    trimmedIn: false,
+    trimmedOut: false,
     transitionInId: 'clip-1-transition-in',
     transitionOutId: 'clip-1-transition-out'
   },
@@ -55,6 +59,10 @@ export const demoOverlays: Overlay[] = [
     muted: false,
     selected: false,
     label: 'Video 2',
+    length: 12, // Original video length in seconds
+    speed: 1.0, // Normal playback speed
+    trimmedIn: false,
+    trimmedOut: false,
     transitionInId: 'clip-2-transition-in',
     transitionOutId: 'clip-2-transition-out'
   },
@@ -161,7 +169,11 @@ export function generateRandomOverlay(id: string, row: number): Overlay {
         src: `/demo/random-video-${Math.floor(Math.random() * 5) + 1}.mp4`,
         mediaStartTime: 0,
         volume: 0.5 + Math.random() * 0.5,
-        muted: Math.random() > 0.7
+        muted: Math.random() > 0.7,
+        length: 10 + Math.random() * 20, // Random length between 10-30 seconds
+        speed: 0.5 + Math.random() * 1.5, // Random speed between 0.5x-2.0x
+        trimmedIn: false,
+        trimmedOut: false
       } as ClipOverlay
       
     case OverlayType.SOUND:
