@@ -247,9 +247,66 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
     }
     
     case 'DELETE_OVERLAY': {
+      const deletedOverlay = state.history.present.overlays.find(o => o.id === action.payload)
+      let filteredOverlays = state.history.present.overlays.filter(overlay => overlay.id !== action.payload)
+      
+      // Handle merged transition conversion when deleting a clip
+      if (deletedOverlay?.type === OverlayType.CLIP) {
+        const mergedTransition = state.history.present.overlays.find(o => 
+          o.type === OverlayType.TRANSITION_MERGED && 
+          ((o as MergedTransitionOverlay).fromClipId === deletedOverlay.id || (o as MergedTransitionOverlay).toClipId === deletedOverlay.id)
+        ) as MergedTransitionOverlay | undefined
+        
+        if (mergedTransition) {
+          // Determine which clip remains and what type of transition to create
+          const remainingClipId = mergedTransition.fromClipId === deletedOverlay.id 
+            ? mergedTransition.toClipId 
+            : mergedTransition.fromClipId
+          const remainingClip = state.history.present.overlays.find(o => o.id === remainingClipId)
+          
+          if (remainingClip) {
+            // Create a regular transition based on which clip was deleted
+            const isFromClipDeleted = mergedTransition.fromClipId === deletedOverlay.id
+            const newTransitionType = isFromClipDeleted ? OverlayType.TRANSITION_IN : OverlayType.TRANSITION_OUT
+            
+            const newTransition = {
+              id: `${remainingClipId}-transition-${isFromClipDeleted ? 'in' : 'out'}`,
+              type: newTransitionType,
+              startTime: isFromClipDeleted 
+                ? mergedTransition.startTime - mergedTransition.duration 
+                : remainingClip.startTime + remainingClip.duration,
+              duration: mergedTransition.duration,
+              row: mergedTransition.row,
+              selected: false,
+              parentClipId: remainingClipId,
+              transitionType: mergedTransition.transitionType
+            } as TransitionInOverlay | TransitionOutOverlay
+            
+            // Remove merged transition and add the new regular transition
+            filteredOverlays = filteredOverlays.filter(o => o.id !== mergedTransition.id)
+            filteredOverlays.push(newTransition)
+            
+            // Update remaining clip to reference the new transition
+            const clipIndex = filteredOverlays.findIndex(o => o.id === remainingClipId)
+            if (clipIndex !== -1) {
+              const updatedClip = { ...filteredOverlays[clipIndex] } as any
+              if (isFromClipDeleted) {
+                updatedClip.transitionInId = newTransition.id
+              } else {
+                updatedClip.transitionOutId = newTransition.id
+              }
+              filteredOverlays[clipIndex] = updatedClip
+            }
+          } else {
+            // If remaining clip is not found, just remove the merged transition
+            filteredOverlays = filteredOverlays.filter(o => o.id !== mergedTransition.id)
+          }
+        }
+      }
+      
       const newState = {
         ...state.history.present,
-        overlays: state.history.present.overlays.filter(overlay => overlay.id !== action.payload),
+        overlays: filteredOverlays,
         selectedOverlayIds: state.history.present.selectedOverlayIds.filter(id => id !== action.payload)
       }
       return {
@@ -260,9 +317,76 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
     
     case 'DELETE_OVERLAYS': {
       const idsToDelete = new Set(action.payload)
+      const deletedClips = state.history.present.overlays.filter(o => 
+        idsToDelete.has(o.id) && o.type === OverlayType.CLIP
+      )
+      let filteredOverlays = state.history.present.overlays.filter(overlay => !idsToDelete.has(overlay.id))
+      
+      // Handle merged transitions for each deleted clip
+      deletedClips.forEach(deletedClip => {
+        const mergedTransition = state.history.present.overlays.find(o => 
+          o.type === OverlayType.TRANSITION_MERGED && 
+          ((o as MergedTransitionOverlay).fromClipId === deletedClip.id || (o as MergedTransitionOverlay).toClipId === deletedClip.id)
+        ) as MergedTransitionOverlay | undefined
+        
+        if (mergedTransition) {
+          // Determine which clip remains and what type of transition to create
+          const remainingClipId = mergedTransition.fromClipId === deletedClip.id 
+            ? mergedTransition.toClipId 
+            : mergedTransition.fromClipId
+          
+          // Check if the remaining clip is also being deleted
+          if (idsToDelete.has(remainingClipId)) {
+            // Both clips being deleted - just remove the merged transition
+            filteredOverlays = filteredOverlays.filter(o => o.id !== mergedTransition.id)
+            return
+          }
+          
+          const remainingClip = state.history.present.overlays.find(o => o.id === remainingClipId)
+          
+          if (remainingClip) {
+            // Create a regular transition based on which clip was deleted
+            const isFromClipDeleted = mergedTransition.fromClipId === deletedClip.id
+            const newTransitionType = isFromClipDeleted ? OverlayType.TRANSITION_IN : OverlayType.TRANSITION_OUT
+            
+            const newTransition = {
+              id: `${remainingClipId}-transition-${isFromClipDeleted ? 'in' : 'out'}`,
+              type: newTransitionType,
+              startTime: isFromClipDeleted 
+                ? mergedTransition.startTime - mergedTransition.duration 
+                : remainingClip.startTime + remainingClip.duration,
+              duration: mergedTransition.duration,
+              row: mergedTransition.row,
+              selected: false,
+              parentClipId: remainingClipId,
+              transitionType: mergedTransition.transitionType
+            } as TransitionInOverlay | TransitionOutOverlay
+            
+            // Remove merged transition and add the new regular transition
+            filteredOverlays = filteredOverlays.filter(o => o.id !== mergedTransition.id)
+            filteredOverlays.push(newTransition)
+            
+            // Update remaining clip to reference the new transition
+            const clipIndex = filteredOverlays.findIndex(o => o.id === remainingClipId)
+            if (clipIndex !== -1) {
+              const updatedClip = { ...filteredOverlays[clipIndex] } as any
+              if (isFromClipDeleted) {
+                updatedClip.transitionInId = newTransition.id
+              } else {
+                updatedClip.transitionOutId = newTransition.id
+              }
+              filteredOverlays[clipIndex] = updatedClip
+            }
+          } else {
+            // If remaining clip is not found, just remove the merged transition
+            filteredOverlays = filteredOverlays.filter(o => o.id !== mergedTransition.id)
+          }
+        }
+      })
+      
       const newState = {
         ...state.history.present,
-        overlays: state.history.present.overlays.filter(overlay => !idsToDelete.has(overlay.id)),
+        overlays: filteredOverlays,
         selectedOverlayIds: state.history.present.selectedOverlayIds.filter(id => !idsToDelete.has(id))
       }
       return {

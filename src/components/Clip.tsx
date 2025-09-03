@@ -32,6 +32,49 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
   
   const parentClip = getParentClip()
   
+  // Helper to check if we should show dog-ear indicators
+  const shouldShowDogEar = () => {
+    if (overlay.type === OverlayType.TRANSITION_IN && parentClip?.type === OverlayType.CLIP) {
+      // Show dog-ear only if there's trim content that can be recovered
+      const trimmedIn = (parentClip as any).trimmedIn || 0
+      return trimmedIn > 0.01 // Small threshold to avoid showing for rounding errors
+    } else if (overlay.type === OverlayType.TRANSITION_OUT && parentClip?.type === OverlayType.CLIP) {
+      // Show dog-ear only if there's trim content that can be recovered
+      const trimmedOut = (parentClip as any).trimmedOut || 0
+      return trimmedOut > 0.01 // Small threshold to avoid showing for rounding errors
+    }
+    return false
+  }
+
+  // Helper to check if clip should show dog-ears for hidden transitions
+  const shouldShowClipDogEars = () => {
+    if (overlay.type !== OverlayType.CLIP) return { left: false, right: false }
+    
+    const clipOverlay = overlay as any
+    let showLeft = false
+    let showRight = false
+    
+    // Check for hidden transition-in (left dog-ear)
+    if (clipOverlay.transitionInId) {
+      const transitionIn = state.overlays.find(o => o.id === clipOverlay.transitionInId)
+      const trimmedIn = clipOverlay.trimmedIn || 0
+      if (transitionIn && transitionIn.duration === 0 && trimmedIn > 0.01) {
+        showLeft = true
+      }
+    }
+    
+    // Check for hidden transition-out (right dog-ear)
+    if (clipOverlay.transitionOutId) {
+      const transitionOut = state.overlays.find(o => o.id === clipOverlay.transitionOutId)
+      const trimmedOut = clipOverlay.trimmedOut || 0
+      if (transitionOut && transitionOut.duration === 0 && trimmedOut > 0.01) {
+        showRight = true
+      }
+    }
+    
+    return { left: showLeft, right: showRight }
+  }
+  
   // Calculate clip dimensions and position
   const clipStyle = getClipStyle(overlay)
   const width = overlay.duration * settings.pixelsPerSecond * state.zoom
@@ -216,6 +259,11 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
     }
   }
   
+  // Hide transitions with 0 duration
+  if ((overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) && overlay.duration === 0) {
+    return null
+  }
+
   return (
     <div
       id={`overlay-${overlay.id}`}
@@ -274,6 +322,33 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
           )}
         </>
       )}
+      
+      {/* Dog-ear indicators for trimmed clips on transitions */}
+      {shouldShowDogEar() && (
+        <>
+          {overlay.type === OverlayType.TRANSITION_IN && (
+            <div className="dog-ear dog-ear-left" />
+          )}
+          {overlay.type === OverlayType.TRANSITION_OUT && (
+            <div className="dog-ear dog-ear-right" />
+          )}
+        </>
+      )}
+      
+      {/* Dog-ear indicators for clips with hidden transitions */}
+      {(() => {
+        const clipDogEars = shouldShowClipDogEars()
+        return (
+          <>
+            {clipDogEars.left && (
+              <div className="dog-ear dog-ear-left" />
+            )}
+            {clipDogEars.right && (
+              <div className="dog-ear dog-ear-right" />
+            )}
+          </>
+        )
+      })()}
     </div>
   )
 }

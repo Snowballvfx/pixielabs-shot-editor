@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, useEffect } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
 import { Overlay, DragInfo, OverlayType, TransitionInOverlay, TransitionOutOverlay, MergedTransitionOverlay, ClipOverlay } from '../types/overlays'
 
@@ -347,6 +347,9 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   const snapToGrid = useCallback((time: number): number => {
     if (!settings.snapToGrid)
       return time
+    // Special case: allow exact 0 values without snapping
+    if (time === 0)
+      return 0
     return Math.round(time / settings.gridSize) * settings.gridSize
   }, [settings.snapToGrid, settings.gridSize])
 
@@ -354,6 +357,70 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   const getEffectiveClipLength = useCallback((clip: ClipOverlay): number => {
     return clip.length / clip.speed
   }, [])
+
+  // Calculate actual trim values based on clip properties and transition usage
+  const calculateTrimValues = useCallback((clip: ClipOverlay): { trimIn: number; trimOut: number } => {
+    const effectiveLength = getEffectiveClipLength(clip)
+    const totalUsedTime = clip.duration
+    
+    // If the clip duration is less than effective length, some content is trimmed
+    if (totalUsedTime < effectiveLength) {
+      // mediaStartTime represents how much was trimmed from the beginning
+      const baseTrimIn = clip.mediaStartTime / clip.speed // Convert to timeline time
+      // The rest is trimmed from the end
+      const baseTrimOut = effectiveLength - totalUsedTime - baseTrimIn
+      
+      // Account for transition usage - find transitions for this clip
+      const transitionIn = state.overlays.find(o => o.id === clip.transitionInId)
+      const transitionOut = state.overlays.find(o => o.id === clip.transitionOutId)
+      
+      // Available trim content is reduced by what transitions are using
+      const trimInUsedByTransition = transitionIn?.duration || 0
+      const trimOutUsedByTransition = transitionOut?.duration || 0
+      
+      return {
+        trimIn: Math.max(0, baseTrimIn - trimInUsedByTransition),
+        trimOut: Math.max(0, baseTrimOut - trimOutUsedByTransition)
+      }
+    }
+    
+    return { trimIn: 0, trimOut: 0 }
+  }, [getEffectiveClipLength, state.overlays])
+
+  // Update clip trim values based on current state
+  const updateClipTrimValues = useCallback((clipId: string) => {
+    const clip = state.overlays.find(o => o.id === clipId && o.type === OverlayType.CLIP) as ClipOverlay | undefined
+    if (!clip) return
+
+    const { trimIn, trimOut } = calculateTrimValues(clip)
+    
+    // Only update if values have changed to avoid unnecessary re-renders
+    if (Math.abs(clip.trimmedIn - trimIn) > 0.01 || Math.abs(clip.trimmedOut - trimOut) > 0.01) {
+      actions.updateOverlay(clipId, {
+        trimmedIn: trimIn,
+        trimmedOut: trimOut
+      })
+    }
+  }, [state.overlays, calculateTrimValues, actions])
+
+  // Initialize trim values for all clips on mount
+  const initializeTrimValues = useCallback(() => {
+    state.overlays.forEach(overlay => {
+      if (overlay.type === OverlayType.CLIP) {
+        updateClipTrimValues(overlay.id)
+      }
+    })
+  }, [state.overlays, updateClipTrimValues])
+
+  // Run initialization when component mounts or overlays change significantly
+  useEffect(() => {
+    // Use a timeout to ensure all state is settled
+    const timer = setTimeout(() => {
+      initializeTrimValues()
+    }, 100)
+    
+    return () => clearTimeout(timer)
+  }, []) // Only run once on mount
 
   // Validate that total duration doesn't exceed clip's effective length
   const validateClipTotalLength = useCallback((clipOverlay: ClipOverlay, newClipDuration?: number, newTransitionInDuration?: number, newTransitionOutDuration?: number): { isValid: boolean; maxAllowedDuration: number; currentTotal: number } => {
@@ -388,7 +455,58 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     }
   }, [state.overlays, getEffectiveClipLength])
 
-  // Calculate maximum allowed duration for a specific component (clip or transition)
+  // Calculate maximum allowed duration for extending in a specific direction
+  const getMaxAllowedDurationForExtension = useCallback((overlay: Overlay, direction: 'start' | 'end'): number => {
+    let clipOverlay: ClipOverlay | undefined
+
+    if (overlay.type === OverlayType.CLIP) {
+      clipOverlay = overlay as ClipOverlay
+    } else if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
+      const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
+      clipOverlay = state.overlays.find(o => o.id === parentClipId) as ClipOverlay | undefined
+    }
+
+    if (!clipOverlay) return overlay.duration
+
+    const { trimIn, trimOut } = calculateTrimValues(clipOverlay)
+
+    // For clips extending from start: can extend up to trimmedIn amount
+    // For clips extending from end: can extend up to trimmedOut amount
+    if (overlay.type === OverlayType.CLIP) {
+      if (direction === 'start') {
+        // Extending leftward: can add back trimmed-in content
+        return overlay.duration + trimIn
+      } else {
+        // Extending rightward: can add back trimmed-out content
+        return overlay.duration + trimOut
+      }
+    }
+
+    // For transitions, the limit is based on parent clip's available content
+    if (overlay.type === OverlayType.TRANSITION_IN) {
+      if (direction === 'start') {
+        // Transition-in extending leftward: limited by trimmed-in content
+        return overlay.duration + trimIn
+      } else {
+        // Transition-in extending rightward: limited by remaining clip duration
+        return Math.min(overlay.duration + trimOut, clipOverlay.duration)
+      }
+    }
+
+    if (overlay.type === OverlayType.TRANSITION_OUT) {
+      if (direction === 'start') {
+        // Transition-out extending leftward: limited by remaining clip duration
+        return Math.min(overlay.duration + trimIn, clipOverlay.duration)
+      } else {
+        // Transition-out extending rightward: limited by trimmed-out content
+        return overlay.duration + trimOut
+      }
+    }
+
+    return overlay.duration
+  }, [state.overlays, getEffectiveClipLength, calculateTrimValues])
+
+  // Calculate maximum allowed duration for a specific component (legacy function for compatibility)
   const getMaxAllowedDuration = useCallback((overlay: Overlay, componentType: 'clip' | 'transition-in' | 'transition-out'): number => {
     let clipOverlay: ClipOverlay | undefined
 
@@ -683,14 +801,48 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         } else if (currentDragInfo.dragType === 'resize-left') {
           // Handle transition resize differently - only transition-in can resize from left
           if (overlay.type === OverlayType.TRANSITION_IN) {
-            const requestedDuration = Math.max(0.05, currentDragInfo.originalDuration - deltaTime)
-            const maxAllowed = getMaxAllowedDuration(overlay, 'transition-in')
+            const requestedDuration = Math.max(0, currentDragInfo.originalDuration - deltaTime)
+            // For transition-in left resize, we're potentially extending from the start
+            const isExtending = requestedDuration > currentDragInfo.originalDuration
+            const maxAllowed = isExtending 
+              ? getMaxAllowedDurationForExtension(overlay, 'start')
+              : getMaxAllowedDuration(overlay, 'transition-in')
             const newDuration = Math.min(requestedDuration, maxAllowed)
             
-            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionInOverlay).parentClipId)
+            console.log('Transition-in resize debug:', {
+              originalDuration: currentDragInfo.originalDuration,
+              deltaTime,
+              requestedDuration,
+              isExtending,
+              maxAllowed,
+              newDuration,
+              snappedDuration: snapToGrid(newDuration)
+            })
+            
+            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionInOverlay).parentClipId) as ClipOverlay | undefined
             if (parentClip) {
               const newTransitionStart = parentClip.startTime - snapToGrid(newDuration)
-              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: snapToGrid(newDuration), row: parentClip.row })
+              const newTransitionDuration = snapToGrid(newDuration)
+              
+              // Create temporary clip state with updated transition duration for trim calculation
+              const tempClip = {
+                ...parentClip,
+                transitionInId: overlay.id // Ensure it references this transition
+              }
+              
+              // Calculate trim values considering the new transition duration
+              const effectiveLength = getEffectiveClipLength(tempClip)
+              const baseTrimIn = tempClip.mediaStartTime / tempClip.speed
+              const baseTrimOut = effectiveLength - tempClip.duration - baseTrimIn
+              const trimIn = Math.max(0, baseTrimIn - newTransitionDuration)
+              const trimOut = Math.max(0, baseTrimOut - (state.overlays.find(o => o.id === tempClip.transitionOutId)?.duration || 0))
+              
+              // Update both transition and parent clip
+              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: newTransitionDuration, row: parentClip.row })
+              actions.updateOverlayBatch(parentClip.id, {
+                trimmedIn: trimIn,
+                trimmedOut: trimOut
+              })
             } else {
               actions.updateOverlayBatch(overlay.id, { duration: snapToGrid(newDuration) })
             }
@@ -707,11 +859,17 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           // Check clip length constraints
           if (overlay.type === OverlayType.CLIP) {
             const clipOverlay = overlay as ClipOverlay
-            const maxAllowed = getMaxAllowedDuration(overlay, 'clip')
+            // For left resize, we're potentially extending from the start
+            const isExtending = newStartTime < currentDragInfo.originalStartTime
+            const maxAllowed = isExtending 
+              ? getMaxAllowedDurationForExtension(overlay, 'start')
+              : getMaxAllowedDuration(overlay, 'clip')
             const newDuration = Math.min(requestedDuration, maxAllowed)
             
-            // Check if this is a trim operation (start time changed)
-            const isTrimIn = newStartTime > currentDragInfo.originalStartTime
+            // When left-resizing, we're effectively trimming more from the beginning
+            // Calculate new mediaStartTime (in source time)
+            const timeShift = newStartTime - currentDragInfo.originalStartTime
+            const newMediaStartTime = Math.max(0, clipOverlay.mediaStartTime + (timeShift * clipOverlay.speed))
             
             console.log('Left resize with constraints:', {
               deltaPixels: e.clientX - currentDragInfo.startX,
@@ -722,21 +880,34 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               requestedDuration,
               maxAllowed,
               finalDuration: newDuration,
-              isTrimIn
+              timeShift,
+              oldMediaStartTime: clipOverlay.mediaStartTime,
+              newMediaStartTime
             })
             
             if (!checkCollision(overlay, newStartTime, newDuration)) {
               console.log('Updating left resize:', { 
                 startTime: snapToGrid(newStartTime), 
                 duration: snapToGrid(newDuration),
-                trimmedIn: isTrimIn
+                mediaStartTime: newMediaStartTime
               })
               
-              // Update the main overlay with trim indicator
+              // Calculate new trim values immediately based on the new clip properties
+              const tempClip = {
+                ...clipOverlay,
+                startTime: snapToGrid(newStartTime),
+                duration: snapToGrid(newDuration),
+                mediaStartTime: newMediaStartTime
+              }
+              const { trimIn, trimOut } = calculateTrimValues(tempClip)
+
+              // Update the main overlay with immediate trim values
               actions.updateOverlayBatch(overlay.id, {
                 startTime: snapToGrid(newStartTime),
                 duration: snapToGrid(newDuration),
-                trimmedIn: isTrimIn || clipOverlay.trimmedIn
+                mediaStartTime: newMediaStartTime,
+                trimmedIn: trimIn,
+                trimmedOut: trimOut
               })
               
               // Update associated transitions
@@ -816,14 +987,48 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         } else if (currentDragInfo.dragType === 'resize-right') {
           // Handle transition resize differently - only transition-out can resize from right
           if (overlay.type === OverlayType.TRANSITION_OUT) {
-            const requestedDuration = Math.max(0.05, currentDragInfo.originalDuration + deltaTime)
-            const maxAllowed = getMaxAllowedDuration(overlay, 'transition-out')
+            const requestedDuration = Math.max(0, currentDragInfo.originalDuration + deltaTime)
+            // For transition-out right resize, we're potentially extending from the end
+            const isExtending = requestedDuration > currentDragInfo.originalDuration
+            const maxAllowed = isExtending 
+              ? getMaxAllowedDurationForExtension(overlay, 'end')
+              : getMaxAllowedDuration(overlay, 'transition-out')
             const newDuration = Math.min(requestedDuration, maxAllowed)
             
-            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionOutOverlay).parentClipId)
+            console.log('Transition-out resize debug:', {
+              originalDuration: currentDragInfo.originalDuration,
+              deltaTime,
+              requestedDuration,
+              isExtending,
+              maxAllowed,
+              newDuration,
+              snappedDuration: snapToGrid(newDuration)
+            })
+            
+            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionOutOverlay).parentClipId) as ClipOverlay | undefined
             if (parentClip) {
               const newTransitionStart = parentClip.startTime + parentClip.duration
-              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: snapToGrid(newDuration), row: parentClip.row })
+              const newTransitionDuration = snapToGrid(newDuration)
+              
+              // Create temporary clip state with updated transition duration for trim calculation
+              const tempClip = {
+                ...parentClip,
+                transitionOutId: overlay.id // Ensure it references this transition
+              }
+              
+              // Calculate trim values considering the new transition duration
+              const effectiveLength = getEffectiveClipLength(tempClip)
+              const baseTrimIn = tempClip.mediaStartTime / tempClip.speed
+              const baseTrimOut = effectiveLength - tempClip.duration - baseTrimIn
+              const trimIn = Math.max(0, baseTrimIn - (state.overlays.find(o => o.id === tempClip.transitionInId)?.duration || 0))
+              const trimOut = Math.max(0, baseTrimOut - newTransitionDuration)
+              
+              // Update both transition and parent clip
+              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: newTransitionDuration, row: parentClip.row })
+              actions.updateOverlayBatch(parentClip.id, {
+                trimmedIn: trimIn,
+                trimmedOut: trimOut
+              })
             } else {
               actions.updateOverlayBatch(overlay.id, { duration: snapToGrid(newDuration) })
             }
@@ -838,12 +1043,12 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           
           // Check clip length constraints
           if (overlay.type === OverlayType.CLIP) {
-            const clipOverlay = overlay as ClipOverlay
-            const maxAllowed = getMaxAllowedDuration(overlay, 'clip')
+            // For right resize, we're potentially extending from the end
+            const isExtending = requestedDuration > currentDragInfo.originalDuration
+            const maxAllowed = isExtending 
+              ? getMaxAllowedDurationForExtension(overlay, 'end')
+              : getMaxAllowedDuration(overlay, 'clip')
             const newDuration = Math.min(requestedDuration, maxAllowed)
-            
-            // Check if this is a trim operation (duration decreased from right)
-            const isTrimOut = newDuration < currentDragInfo.originalDuration
             
             console.log('Right resize with constraints:', {
               deltaPixels: e.clientX - currentDragInfo.startX,
@@ -853,18 +1058,25 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               maxAllowed,
               finalDuration: newDuration,
               originalStartTime: currentDragInfo.originalStartTime,
-              overlayStartTime: overlay.startTime,
-              isTrimOut
+              overlayStartTime: overlay.startTime
             })
             
             // For right resize, startTime should remain at the original position
             if (!checkCollision(overlay, currentDragInfo.originalStartTime, newDuration)) {
-              console.log('Updating duration to:', snapToGrid(newDuration), 'trimmedOut:', isTrimOut)
+              console.log('Updating duration to:', snapToGrid(newDuration))
               
-              // Update the main overlay duration with trim indicator
+              // Calculate new trim values immediately based on the new clip properties
+              const tempClip = {
+                ...overlay as ClipOverlay,
+                duration: snapToGrid(newDuration)
+              }
+              const { trimIn, trimOut } = calculateTrimValues(tempClip)
+
+              // Update the main overlay duration with immediate trim values
               actions.updateOverlayBatch(overlay.id, { 
                 duration: snapToGrid(newDuration),
-                trimmedOut: isTrimOut || clipOverlay.trimmedOut
+                trimmedIn: trimIn,
+                trimmedOut: trimOut
               })
               
               // Update transition-out position if it exists

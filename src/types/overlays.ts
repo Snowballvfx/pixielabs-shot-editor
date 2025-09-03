@@ -30,8 +30,8 @@ export interface ClipOverlay extends BaseOverlay {
   muted: boolean
   length: number // Original/source media length in seconds
   speed: number // Playback speed multiplier (1.0 = normal, 0.5 = half speed, 2.0 = double speed)
-  trimmedIn: boolean // Visual indicator for trim-in
-  trimmedOut: boolean // Visual indicator for trim-out
+  trimmedIn: number // Time delta from original start (0 = not trimmed from beginning)
+  trimmedOut: number // Time delta from original end (0 = not trimmed from end)
 }
 
 export interface SoundOverlay extends BaseOverlay {

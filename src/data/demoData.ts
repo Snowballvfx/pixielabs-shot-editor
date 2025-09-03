@@ -1,7 +1,10 @@
 import { Overlay, OverlayType, ClipOverlay, SoundOverlay, TextOverlay, ImageOverlay } from '../types/overlays'
 
 export const demoOverlays: Overlay[] = [
-  // Video clip on track 0
+  // Video clip on track 0 - trimmed from both ends to demonstrate dog-ears
+  // Original length: 15s, Speed: 1.0x, Effective length: 15s
+  // Used: mediaStartTime(2s) + duration(8s) = 10s of 15s source
+  // So trimmedIn = 2s/1.0 = 2s, trimmedOut = 15s - 10s = 5s
   {
     id: 'clip-1',
     type: OverlayType.CLIP,
@@ -9,15 +12,15 @@ export const demoOverlays: Overlay[] = [
     duration: 8,
     row: 0,
     src: '/demo/video1.mp4',
-    mediaStartTime: 0,
+    mediaStartTime: 2, // Started at 2 seconds in source (trim-in)
     volume: 1,
     muted: false,
     selected: false,
-    label: 'Video 1',
+    label: 'Video 1 (Trimmed)',
     length: 15, // Original video length in seconds
     speed: 1.0, // Normal playback speed
-    trimmedIn: false,
-    trimmedOut: false,
+    trimmedIn: 0, // Will be calculated by trim detection
+    trimmedOut: 0, // Will be calculated by trim detection
     transitionInId: 'clip-1-transition-in',
     transitionOutId: 'clip-1-transition-out'
   },
@@ -46,23 +49,26 @@ export const demoOverlays: Overlay[] = [
     transitionType: 'fade'
   },
   
-  // Another video clip on track 0
+  // Another video clip on track 0 - with speed change and trimming
+  // Original length: 12s, Speed: 2.0x, Effective length: 6s
+  // Used: mediaStartTime(1s) + duration(4s) = 5s of 6s effective (10s of 12s source)
+  // So trimmedIn = 1s/2.0 = 0.5s timeline, trimmedOut = 6s - 5s = 1s timeline
   {
     id: 'clip-2',
     type: OverlayType.CLIP,
     startTime: 10,
-    duration: 6,
+    duration: 4,
     row: 0,
     src: '/demo/video2.mp4',
-    mediaStartTime: 2,
+    mediaStartTime: 1, // Started at 1 second in source
     volume: 0.8,
     muted: false,
     selected: false,
-    label: 'Video 2',
+    label: 'Video 2 (2x Speed)',
     length: 12, // Original video length in seconds
-    speed: 1.0, // Normal playback speed
-    trimmedIn: false,
-    trimmedOut: false,
+    speed: 2.0, // Double speed
+    trimmedIn: 0, // Will be calculated by trim detection
+    trimmedOut: 0, // Will be calculated by trim detection
     transitionInId: 'clip-2-transition-in',
     transitionOutId: 'clip-2-transition-out'
   },
@@ -71,8 +77,8 @@ export const demoOverlays: Overlay[] = [
   {
     id: 'clip-2-transition-in',
     type: OverlayType.TRANSITION_IN,
-    startTime: 9.7, // clip start - duration
-    duration: 0.3,
+    startTime: 9.5, // clip start - duration
+    duration: 0.5,
     row: 0,
     selected: false,
     parentClipId: 'clip-2',
@@ -83,8 +89,8 @@ export const demoOverlays: Overlay[] = [
   {
     id: 'clip-2-transition-out',
     type: OverlayType.TRANSITION_OUT,
-    startTime: 16, // clip end
-    duration: 0.3,
+    startTime: 14, // clip end (10 + 4)
+    duration: 0.5,
     row: 0,
     selected: false,
     parentClipId: 'clip-2',
@@ -172,8 +178,8 @@ export function generateRandomOverlay(id: string, row: number): Overlay {
         muted: Math.random() > 0.7,
         length: 10 + Math.random() * 20, // Random length between 10-30 seconds
         speed: 0.5 + Math.random() * 1.5, // Random speed between 0.5x-2.0x
-        trimmedIn: false,
-        trimmedOut: false
+        trimmedIn: 0.0, // Not trimmed from beginning
+        trimmedOut: 0.0 // Not trimmed from end
       } as ClipOverlay
       
     case OverlayType.SOUND:
