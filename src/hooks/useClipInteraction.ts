@@ -696,6 +696,13 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       if (clickX >= overlayWidth - transitionInteractiveWidth) {
         dragType = 'resize-right'
       }
+    } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
+      // Merged transitions get both resize handles
+      if (clickX <= resizeHandleWidth) {
+        dragType = 'resize-left'
+      } else if (clickX >= overlayWidth - resizeHandleWidth) {
+        dragType = 'resize-right'
+      }
     } else {
       // Regular clips get both resize handles
       if (clickX <= resizeHandleWidth) {
@@ -768,10 +775,15 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           // Use the current anchor position to compute a valid incremental delta
           const anchorCurrent = state.overlays.find(o => o.id === anchorOverlay.id) || anchorOverlay
           const anchorTarget = Math.max(0, anchorCurrent.startTime + deltaTime)
+          
+          // Add timeline boundary constraints - prevent dragging beyond timeline duration
+          const maxAllowedStart = Math.max(0, state.duration - anchorCurrent.duration)
+          const boundaryConstrainedTarget = Math.min(anchorTarget, maxAllowedStart)
+          
           // For clips, allow overlaps during drag - for transitions, use collision detection
           const validAnchorStart = anchorCurrent.type === OverlayType.CLIP 
-            ? snapToGrid(anchorTarget) 
-            : findValidPosition(anchorCurrent, anchorTarget)
+            ? snapToGrid(boundaryConstrainedTarget) 
+            : findValidPosition(anchorCurrent, boundaryConstrainedTarget)
           const deltaSinceLast = snapToGrid(validAnchorStart - anchorCurrent.startTime)
 
           // Move all related overlays by the same incremental delta to avoid stale state reads
@@ -851,11 +863,78 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           } else if (overlay.type === OverlayType.TRANSITION_OUT) {
             // Transition-out cannot resize from left
             return
+          } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
+            // Merged transition left resize - resize the fromClip (like resizing clip end)
+            const mergedTransition = overlay as MergedTransitionOverlay
+            const fromClip = state.overlays.find(o => o.id === mergedTransition.fromClipId) as ClipOverlay | undefined
+            const toClip = state.overlays.find(o => o.id === mergedTransition.toClipId)
+            
+            if (fromClip && toClip && fromClip.type === OverlayType.CLIP) {
+              // Calculate new fromClip duration based on merged transition left resize
+              // When dragging left handle right (positive deltaTime), we want to extend fromClip
+              const mergedTransitionDelta = deltaTime // How much the transition start is moving
+              const newFromClipDuration = Math.max(0.1, fromClip.duration + mergedTransitionDelta)
+              
+              // Apply same constraints as regular clip right resize
+              const isExtending = newFromClipDuration > fromClip.duration
+              const maxAllowed = isExtending 
+                ? getMaxAllowedDurationForExtension(fromClip, 'end')
+                : getMaxAllowedDuration(fromClip, 'clip')
+              const constrainedDuration = Math.min(newFromClipDuration, maxAllowed)
+              
+              // Add timeline boundary constraints
+              const maxAllowedEnd = state.duration
+              const boundaryConstrainedDuration = Math.max(0.1, Math.min(constrainedDuration, maxAllowedEnd - fromClip.startTime))
+              
+              if (!checkCollision(fromClip, fromClip.startTime, boundaryConstrainedDuration)) {
+                // Calculate new trim values for the fromClip
+                const tempClip = {
+                  ...fromClip,
+                  duration: snapToGrid(boundaryConstrainedDuration)
+                }
+                const { trimIn, trimOut } = calculateTrimValues(tempClip)
+
+                // Update fromClip duration
+                actions.updateOverlayBatch(fromClip.id, { 
+                  duration: snapToGrid(boundaryConstrainedDuration),
+                  trimmedIn: trimIn,
+                  trimmedOut: trimOut
+                })
+                
+                // Update merged transition start to stay glued to fromClip end
+                // and adjust duration so the end stays in the same place
+                const newMergedStart = fromClip.startTime + snapToGrid(boundaryConstrainedDuration)
+                const originalMergedEnd = overlay.startTime + overlay.duration
+                const newMergedDuration = Math.max(0.1, originalMergedEnd - newMergedStart)
+                
+                actions.updateOverlayBatch(overlay.id, { 
+                  startTime: newMergedStart,
+                  duration: snapToGrid(newMergedDuration)
+                })
+                
+                // toClip (clip-2) doesn't move when resizing merged transition start
+                // It stays in its original position
+                
+                // Update fromClip's transition-out if it exists
+                if (fromClip.transitionOutId && fromClip.transitionOutId !== overlay.id) {
+                  const transitionOut = state.overlays.find(o => o.id === fromClip.transitionOutId)
+                  if (transitionOut) {
+                    const newTransitionOutStart = fromClip.startTime + snapToGrid(boundaryConstrainedDuration)
+                    actions.updateOverlayBatch(fromClip.transitionOutId, { startTime: newTransitionOutStart, row: fromClip.row })
+                  }
+                }
+              }
+            }
+            return
           }
           
           // Regular clip resize logic with length constraints
           const newStartTime = Math.max(0, currentDragInfo.originalStartTime + deltaTime)
           const requestedDuration = Math.max(0.1, currentDragInfo.originalDuration - deltaTime)
+          
+          // Add timeline boundary constraints for left resize
+          const maxEndTime = Math.min(newStartTime + requestedDuration, state.duration)
+          const boundaryConstrainedDuration = Math.max(0.1, maxEndTime - newStartTime)
           
           // Check clip length constraints
           if (overlay.type === OverlayType.CLIP) {
@@ -865,7 +944,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
             const maxAllowed = isExtending 
               ? getMaxAllowedDurationForExtension(overlay, 'start')
               : getMaxAllowedDuration(overlay, 'clip')
-            const newDuration = Math.min(requestedDuration, maxAllowed)
+            const newDuration = Math.min(boundaryConstrainedDuration, maxAllowed)
             
             // When left-resizing, we're effectively trimming more from the beginning
             // Calculate new mediaStartTime (in source time)
@@ -1037,10 +1116,86 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           } else if (overlay.type === OverlayType.TRANSITION_IN) {
             // Transition-in cannot resize from right
             return
+          } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
+            // Merged transition right resize - move the toClip start position (like resizing clip start)
+            const mergedTransition = overlay as MergedTransitionOverlay
+            const fromClip = state.overlays.find(o => o.id === mergedTransition.fromClipId)
+            const toClip = state.overlays.find(o => o.id === mergedTransition.toClipId) as ClipOverlay | undefined
+            
+            if (fromClip && toClip && toClip.type === OverlayType.CLIP) {
+              // Calculate new toClip start position based on merged transition right resize
+              const mergedTransitionDelta = deltaTime // How much the transition end is moving
+              const newToClipStart = Math.max(0, toClip.startTime + mergedTransitionDelta)
+              const newToClipDuration = Math.max(0.1, toClip.duration - mergedTransitionDelta)
+              
+              // Apply same constraints as regular clip left resize
+              const isExtending = newToClipStart < toClip.startTime
+              const maxAllowed = isExtending 
+                ? getMaxAllowedDurationForExtension(toClip, 'start')
+                : getMaxAllowedDuration(toClip, 'clip')
+              const constrainedDuration = Math.min(newToClipDuration, maxAllowed)
+              
+              // Add timeline boundary constraints
+              const maxEndTime = Math.min(newToClipStart + constrainedDuration, state.duration)
+              const boundaryConstrainedDuration = Math.max(0.1, maxEndTime - newToClipStart)
+              
+              if (!checkCollision(toClip, newToClipStart, boundaryConstrainedDuration)) {
+                // When left-resizing toClip, calculate new mediaStartTime (in source time)
+                const timeShift = newToClipStart - toClip.startTime
+                const newMediaStartTime = Math.max(0, toClip.mediaStartTime + (timeShift * toClip.speed))
+                
+                // Calculate new trim values for the toClip
+                const tempClip = {
+                  ...toClip,
+                  startTime: snapToGrid(newToClipStart),
+                  duration: snapToGrid(boundaryConstrainedDuration),
+                  mediaStartTime: newMediaStartTime
+                }
+                const { trimIn, trimOut } = calculateTrimValues(tempClip)
+
+                // Update toClip position and duration
+                actions.updateOverlayBatch(toClip.id, { 
+                  startTime: snapToGrid(newToClipStart),
+                  duration: snapToGrid(boundaryConstrainedDuration),
+                  mediaStartTime: newMediaStartTime,
+                  trimmedIn: trimIn,
+                  trimmedOut: trimOut
+                })
+                
+                // Update merged transition end to stay glued to toClip start
+                const newMergedDuration = snapToGrid(newToClipStart) - overlay.startTime
+                actions.updateOverlayBatch(overlay.id, { 
+                  duration: Math.max(0.1, newMergedDuration)
+                })
+                
+                // Update toClip's transition-in if it exists
+                if (toClip.transitionInId && toClip.transitionInId !== overlay.id) {
+                  const transitionIn = state.overlays.find(o => o.id === toClip.transitionInId)
+                  if (transitionIn) {
+                    const newTransitionInStart = snapToGrid(newToClipStart) - transitionIn.duration
+                    actions.updateOverlayBatch(toClip.transitionInId, { startTime: newTransitionInStart, row: toClip.row })
+                  }
+                }
+                
+                // Update toClip's transition-out if it exists
+                if (toClip.transitionOutId) {
+                  const transitionOut = state.overlays.find(o => o.id === toClip.transitionOutId)
+                  if (transitionOut) {
+                    const newTransitionOutStart = snapToGrid(newToClipStart) + snapToGrid(boundaryConstrainedDuration)
+                    actions.updateOverlayBatch(toClip.transitionOutId, { startTime: newTransitionOutStart, row: toClip.row })
+                  }
+                }
+              }
+            }
+            return
           }
           
           // Regular clip resize logic with length constraints
           const requestedDuration = Math.max(0.1, currentDragInfo.originalDuration + deltaTime)
+          
+          // Add timeline boundary constraints for right resize
+          const maxAllowedEnd = state.duration
+          const boundaryConstrainedDuration = Math.max(0.1, Math.min(requestedDuration, maxAllowedEnd - currentDragInfo.originalStartTime))
           
           // Check clip length constraints
           if (overlay.type === OverlayType.CLIP) {
@@ -1049,7 +1204,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
             const maxAllowed = isExtending 
               ? getMaxAllowedDurationForExtension(overlay, 'end')
               : getMaxAllowedDuration(overlay, 'clip')
-            const newDuration = Math.min(requestedDuration, maxAllowed)
+            const newDuration = Math.min(boundaryConstrainedDuration, maxAllowed)
             
             console.log('Right resize with constraints:', {
               deltaPixels: e.clientX - currentDragInfo.startX,
@@ -1275,6 +1430,11 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     }
     if (overlay.type === OverlayType.TRANSITION_OUT) {
       return relativeX >= rect.width - transitionInteractiveWidth ? 'ew-resize' : 'grab'
+    }
+    if (overlay.type === OverlayType.TRANSITION_MERGED) {
+      if (relativeX <= resizeHandleWidth) return 'ew-resize'
+      if (relativeX >= rect.width - resizeHandleWidth) return 'ew-resize'
+      return 'grab'
     }
     if (relativeX <= resizeHandleWidth)
       return 'ew-resize'
