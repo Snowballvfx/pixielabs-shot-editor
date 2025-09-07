@@ -313,7 +313,7 @@ body {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 8px;
+  width: 12px;
   cursor: ew-resize;
   background-color: rgba(255, 255, 255, 0.3);
   opacity: 0.6;
@@ -341,7 +341,7 @@ body {
 /* Transition resize handles - smaller and more subtle */
 .transition-resize {
   background-color: rgba(255, 255, 255, 0.6);
-  width: 8px; /* match .resize-handle width */
+  width: 12px; /* match .resize-handle width */
   border-radius: 1px;
 }
 
