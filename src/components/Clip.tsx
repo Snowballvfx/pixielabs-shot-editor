@@ -74,6 +74,22 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
     
     return { left: showLeft, right: showRight }
   }
+
+  // Helper to get trim indicators for clips
+  const getTrimIndicators = () => {
+    if (overlay.type !== OverlayType.CLIP) return { showTrimIn: false, showTrimOut: false, trimIn: 0, trimOut: 0 }
+    
+    const clipOverlay = overlay as any
+    const trimmedIn = clipOverlay.trimmedIn || 0
+    const trimmedOut = clipOverlay.trimmedOut || 0
+    
+    return {
+      showTrimIn: trimmedIn > 0.01,
+      showTrimOut: trimmedOut > 0.01,
+      trimIn: trimmedIn,
+      trimOut: trimmedOut
+    }
+  }
   
   // Calculate clip dimensions and position
   const clipStyle = getClipStyle(overlay)
@@ -345,6 +361,25 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
             )}
             {clipDogEars.right && (
               <div className="dog-ear dog-ear-right" />
+            )}
+          </>
+        )
+      })()}
+
+      {/* Trim indicators for clips */}
+      {(() => {
+        const trimIndicators = getTrimIndicators()
+        return (
+          <>
+            {trimIndicators.showTrimIn && (
+              <div className="trim-indicator trim-in" title={`Trim In: ${trimIndicators.trimIn.toFixed(2)}s`}>
+                <span className="trim-value">{trimIndicators.trimIn.toFixed(1)}s</span>
+              </div>
+            )}
+            {trimIndicators.showTrimOut && (
+              <div className="trim-indicator trim-out" title={`Trim Out: ${trimIndicators.trimOut.toFixed(2)}s`}>
+                <span className="trim-value">{trimIndicators.trimOut.toFixed(1)}s</span>
+              </div>
             )}
           </>
         )

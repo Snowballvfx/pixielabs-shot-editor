@@ -1,11 +1,26 @@
 import React, { useMemo } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
 import { useClipInteraction } from '../hooks/useClipInteraction'
+import { useDragDrop } from '../hooks/useDragDrop'
 import Track from './Track'
+import DropPreview from './DropPreview'
 
 const TimelineTracks: React.FC = () => {
   const { state, settings } = useTimeline()
   const { handleTimelineClick, handleTimelineMouseDown, timelineRef } = useClipInteraction()
+  const { handleDragOver, handleDragLeave, handleDrop, timelineRef: dragDropTimelineRef } = useDragDrop()
+  
+  // Combine refs for timeline interaction and drag & drop
+  const combinedTimelineRef = (el: HTMLDivElement | null) => {
+    // Set the ref for timeline interaction
+    if (timelineRef) {
+      (timelineRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+    }
+    // Set the ref for drag & drop
+    if (dragDropTimelineRef) {
+      (dragDropTimelineRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+    }
+  }
   
   // Group overlays by row
   const trackData = useMemo(() => {
@@ -86,10 +101,13 @@ const TimelineTracks: React.FC = () => {
   
   return (
     <div
-      ref={timelineRef}
+      ref={combinedTimelineRef}
       className="timeline-tracks-container"
       onClick={handleTimelineClick}
       onMouseDown={handleTimelineMouseDown}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
       style={{
         position: 'relative',
         width: `${Math.max(timelineWidth, 800)}px`,
@@ -116,6 +134,9 @@ const TimelineTracks: React.FC = () => {
           />
         ))}
       </div>
+      
+      {/* Drop preview for drag & drop */}
+      <DropPreview />
     </div>
   )
 }
