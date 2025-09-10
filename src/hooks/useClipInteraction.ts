@@ -814,7 +814,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         } else if (currentDragInfo.dragType === 'resize-left') {
           // Handle transition resize differently - only transition-in can resize from left
           if (overlay.type === OverlayType.TRANSITION_IN) {
-            const requestedDuration = Math.max(0, currentDragInfo.originalDuration - deltaTime)
+            const requestedDuration = Math.max(0.1, currentDragInfo.originalDuration - deltaTime)
             // For transition-in left resize, we're potentially extending from the start
             const isExtending = requestedDuration > currentDragInfo.originalDuration
             const maxAllowed = isExtending 
@@ -1067,7 +1067,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         } else if (currentDragInfo.dragType === 'resize-right') {
           // Handle transition resize differently - only transition-out can resize from right
           if (overlay.type === OverlayType.TRANSITION_OUT) {
-            const requestedDuration = Math.max(0, currentDragInfo.originalDuration + deltaTime)
+            const requestedDuration = Math.max(0.1, currentDragInfo.originalDuration + deltaTime)
             // For transition-out right resize, we're potentially extending from the end
             const isExtending = requestedDuration > currentDragInfo.originalDuration
             const maxAllowed = isExtending 

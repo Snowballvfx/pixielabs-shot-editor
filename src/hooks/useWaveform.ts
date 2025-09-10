@@ -8,16 +8,16 @@ interface WaveformData {
 interface UseWaveformOptions {
   sampleRate?: number
   samplesPerPixel?: number
+  fallbackDuration?: number // Duration to use for mock waveform if real audio fails to load
 }
 
 export function useWaveform(audioUrl?: string, options: UseWaveformOptions = {}) {
+  const { samplesPerPixel = 512, fallbackDuration = 10 } = options
   const [waveformData, setWaveformData] = useState<WaveformData | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
-  
-  const { samplesPerPixel = 512 } = options
   
   const processAudioBuffer = useCallback((audioBuffer: AudioBuffer): WaveformData => {
     const channelData = audioBuffer.getChannelData(0) // Use first channel
@@ -85,6 +85,9 @@ export function useWaveform(audioUrl?: string, options: UseWaveformOptions = {})
       const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred'
       setError(errorMessage)
       console.error('Waveform loading error:', err)
+      // Generate mock waveform as fallback
+      const mockData = generateMockWaveform(fallbackDuration)
+      setWaveformData(mockData)
     } finally {
       setIsLoading(false)
     }
@@ -133,7 +136,8 @@ export function useWaveform(audioUrl?: string, options: UseWaveformOptions = {})
     isLoading,
     error,
     generateMockWaveform,
-    reload: audioUrl ? () => loadWaveform(audioUrl) : undefined
+    reload: audioUrl ? () => loadWaveform(audioUrl) : undefined,
+    audioDuration: waveformData?.duration // Add audio duration to return
   }
 }
 

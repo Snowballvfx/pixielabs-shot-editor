@@ -1,5 +1,5 @@
 import React from 'react'
-import { Overlay } from '../types/overlays'
+import { Overlay, OverlayType } from '../types/overlays'
 import { useTimeline } from '../contexts/TimelineContext'
 import Clip from './Clip'
 
@@ -10,6 +10,10 @@ interface TrackProps {
 
 const Track: React.FC<TrackProps> = ({ rowIndex, overlays }) => {
   const { settings } = useTimeline()
+  
+  // Check if this track contains waveform (SOUND) overlays
+  const hasWaveform = overlays.some(overlay => overlay.type === OverlayType.SOUND)
+  const trackLabel = hasWaveform ? 'audio' : `Track ${rowIndex + 1}`
   
   return (
     <div
@@ -42,7 +46,7 @@ const Track: React.FC<TrackProps> = ({ rowIndex, overlays }) => {
           zIndex: 1
         }}
       >
-        Track {rowIndex + 1}
+        {trackLabel}
       </div>
       
       {/* Track content area */}

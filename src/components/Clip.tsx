@@ -9,13 +9,25 @@ interface ClipProps {
 }
 
 const Clip: React.FC<ClipProps> = ({ overlay }) => {
-  const { settings, state, dragInfo } = useTimeline()
+  const { settings, state, dragInfo, actions } = useTimeline()
   const { handleMouseDown, handleClick, getClipStyle } = useClipInteraction()
   
   // For sound overlays, load waveform data
-  const { waveformData, generateMockWaveform } = useWaveform(
-    overlay.type === OverlayType.SOUND ? (overlay as SoundOverlay).src : undefined
+  const { waveformData, generateMockWaveform, audioDuration } = useWaveform(
+    overlay.type === OverlayType.SOUND ? (overlay as SoundOverlay).src : undefined,
+    { fallbackDuration: overlay.duration } // Pass the overlay duration as fallback
   )
+  
+  // Update timeline duration when audio loads for waveform tracks
+  React.useEffect(() => {
+    if (overlay.type === OverlayType.SOUND && audioDuration && audioDuration > 0) {
+      // Update timeline duration to match audio length
+      actions.setDuration(audioDuration)
+    }
+  }, [audioDuration, overlay.type, actions, overlay.id])
+  
+  // Check if this is a waveform track (non-interactive)
+  const isWaveformTrack = overlay.type === OverlayType.SOUND
   
   // Get parent clip for transitions to match colors
   const getParentClip = () => {
@@ -289,13 +301,13 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
         height: `${height}px`,
         top: '10px'
       }}
-      onMouseDown={(e) => handleMouseDown(e, overlay)}
-      onClick={(e) => handleClick(e, overlay)}
+      onMouseDown={!isWaveformTrack ? (e) => handleMouseDown(e, overlay) : undefined}
+      onClick={!isWaveformTrack ? (e) => handleClick(e, overlay) : undefined}
     >
       {renderClipContent()}
       
-      {/* Resize handles - for clips and selective handles for transitions */}
-      {overlay.type !== OverlayType.TRANSITION_IN && overlay.type !== OverlayType.TRANSITION_OUT ? (
+      {/* Resize handles - for clips and selective handles for transitions, but not for waveform tracks */}
+      {!isWaveformTrack && overlay.type !== OverlayType.TRANSITION_IN && overlay.type !== OverlayType.TRANSITION_OUT ? (
         // Regular clips and merged transitions get normal resize handles
         <>
           <div 

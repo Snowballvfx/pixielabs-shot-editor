@@ -2,6 +2,7 @@ import React, { useMemo } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
 import { useClipInteraction } from '../hooks/useClipInteraction'
 import { useDragDrop } from '../hooks/useDragDrop'
+import { OverlayType } from '../types/overlays'
 import Track from './Track'
 import DropPreview from './DropPreview'
 
@@ -40,7 +41,27 @@ const TimelineTracks: React.FC = () => {
     
     return tracks
   }, [state.overlays])
-  
+
+  // Determine track display order - waveform tracks at the bottom
+  const trackOrder = useMemo(() => {
+    const regularTracks: number[] = []
+    const waveformTracks: number[] = []
+    
+    Object.keys(trackData).forEach(rowStr => {
+      const row = parseInt(rowStr)
+      // A waveform track is any SOUND overlay (they're designed to show waveforms)
+      const hasWaveform = trackData[row].some(overlay => overlay.type === OverlayType.SOUND)
+      
+      if (hasWaveform) {
+        waveformTracks.push(row)
+      } else {
+        regularTracks.push(row)
+      }
+    })
+    
+    return [...regularTracks.sort((a, b) => a - b), ...waveformTracks.sort((a, b) => a - b)]
+  }, [trackData])
+
   // Determine the number of tracks to display
   const maxRow = Math.max(0, ...Object.keys(trackData).map(Number))
   const minTracks = 4 // Always show at least 4 tracks
@@ -57,7 +78,7 @@ const TimelineTracks: React.FC = () => {
   
   // Generate grid lines
   for (let time = 0; time <= state.duration; time += minorGridInterval) {
-    const x = time * settings.pixelsPerSecond * state.zoom
+    const x = time * settings.pixelsPerSecond * state.zoom + 60 // Add 60px offset for track labels
     const isMajor = time % majorGridInterval === 0
     
     gridLines.push(
@@ -110,7 +131,7 @@ const TimelineTracks: React.FC = () => {
       onDrop={handleDrop}
       style={{
         position: 'relative',
-        width: `${Math.max(timelineWidth, 800)}px`,
+        width: `${Math.max(timelineWidth + 60, 800)}px`, // Add 60px for track labels
         minHeight: `${tracksTopOffset + trackCount * settings.trackHeight}px`,
         backgroundColor: '#1e1e1e',
         cursor: 'crosshair'
@@ -126,11 +147,20 @@ const TimelineTracks: React.FC = () => {
         className="timeline-tracks-wrapper"
         style={{ position: 'absolute', top: `${tracksTopOffset}px`, left: 0, right: 0 }}
       >
-        {Array.from({ length: trackCount }, (_, index) => (
+        {trackOrder.map((originalRow, displayIndex) => (
           <Track
-            key={index}
-            rowIndex={index}
-            overlays={trackData[index] || []}
+            key={originalRow}
+            rowIndex={displayIndex} // Use display index for positioning
+            overlays={trackData[originalRow] || []}
+          />
+        ))}
+        
+        {/* Add empty tracks if needed */}
+        {Array.from({ length: Math.max(0, trackCount - trackOrder.length) }, (_, index) => (
+          <Track
+            key={`empty-${index}`}
+            rowIndex={trackOrder.length + index}
+            overlays={[]}
           />
         ))}
       </div>

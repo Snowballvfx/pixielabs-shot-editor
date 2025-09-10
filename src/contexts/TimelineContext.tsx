@@ -1,6 +1,6 @@
 import { createContext, useContext, useReducer, ReactNode } from 'react'
 import { Overlay, TimelineState, DragInfo, TimelineSettings, HistoryState, MergedTransitionOverlay, OverlayType, TransitionInOverlay, TransitionOutOverlay } from '../types/overlays'
-import { demoOverlays } from '../data/demoData'
+import { allDemoOverlays } from '../data/demoData'
 
 
 interface TimelineContextType {
@@ -13,6 +13,7 @@ interface TimelineContextType {
     pause: () => void
     seek: (time: number) => void
     setCurrentTime: (time: number) => void
+    setDuration: (duration: number) => void
     
     // Overlay actions
     addOverlay: (overlay: Overlay) => void
@@ -50,6 +51,7 @@ type TimelineAction =
   | { type: 'PAUSE' }
   | { type: 'SEEK'; payload: number }
   | { type: 'SET_CURRENT_TIME'; payload: number }
+  | { type: 'SET_DURATION'; payload: number }
   | { type: 'ADD_OVERLAY'; payload: Overlay }
   | { type: 'UPDATE_OVERLAY'; payload: { id: string; updates: Partial<Overlay> } }
   | { type: 'UPDATE_OVERLAY_BATCH'; payload: { id: string; updates: Partial<Overlay> } }
@@ -76,9 +78,9 @@ interface TimelineContextState {
 }
 
 const initialTimelineState: TimelineState = {
-  overlays: demoOverlays,
+  overlays: allDemoOverlays,
   currentTime: 0,
-  duration: 30, // 30 seconds default
+  duration: Math.max(30, ...allDemoOverlays.map(o => o.startTime + o.duration)), // Calculate from overlays
   isPlaying: false,
   zoom: 1,
   selectedOverlayIds: []
@@ -190,6 +192,15 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
         history: {
           ...state.history,
           present: { ...state.history.present, currentTime: action.payload }
+        }
+      }
+    
+    case 'SET_DURATION':
+      return {
+        ...state,
+        history: {
+          ...state.history,
+          present: { ...state.history.present, duration: action.payload }
         }
       }
     
@@ -626,6 +637,7 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
     pause: () => dispatch({ type: 'PAUSE' }),
     seek: (time: number) => dispatch({ type: 'SEEK', payload: time }),
     setCurrentTime: (time: number) => dispatch({ type: 'SET_CURRENT_TIME', payload: time }),
+    setDuration: (duration: number) => dispatch({ type: 'SET_DURATION', payload: duration }),
     
     addOverlay: (overlay: Overlay) => dispatch({ type: 'ADD_OVERLAY', payload: overlay }),
     updateOverlay: (id: string, updates: Partial<Overlay>) => 

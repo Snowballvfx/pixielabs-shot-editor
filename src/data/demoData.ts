@@ -149,8 +149,99 @@ export const demoOverlays: Overlay[] = [
     height: 100,
     opacity: 0.8,
     selected: false
+  },
+  
+  // Waveform audio track on track 1
+  {
+    id: 'audio-1',
+    type: OverlayType.SOUND,
+    startTime: 0,
+    duration: 40,
+    row: 1,
+    src: '/demo/sample-audio.mp3', // Replace with your audio file URL
+    mediaStartTime: 0,
+    volume: 0.6,
+    muted: false,
+    selected: false,
+    label: 'audio',
+    waveformData: undefined // Will be generated dynamically
   }
 ]
+
+// Additional waveform tracks can be added using the helper function
+const additionalWaveformTracks: SoundOverlay[] = [
+  // Example: createWaveformTrack('audio-2', 'https://example.com/audio.mp3', 5, 8, 1, { label: 'Sound Effect', volume: 0.8 })
+  
+  // To add a waveform track from any audio URL, uncomment and modify:
+  // createWaveformTrack(
+  //   'my-audio-track',                              // Unique ID
+  //   'https://your-audio-url.com/audio.mp3',       // Audio file URL
+  //   0,                                             // Start time (seconds)
+  //   15,                                            // Duration (seconds)  
+  //   1,                                             // Track row
+  //   { 
+  //     label: 'My Audio Track',                     // Display label
+  //     volume: 0.7,                                 // Volume (0.0 to 1.0)
+  //     muted: false                                 // Whether to start muted
+  //   }
+  // )
+]
+
+// Export the combined overlays
+export const allDemoOverlays: Overlay[] = [...demoOverlays, ...additionalWaveformTracks]
+
+// Helper function to create a waveform track
+export function createWaveformTrack(
+  id: string, 
+  audioUrl: string, 
+  startTime: number = 0, 
+  duration: number = 10, 
+  row: number = 1,
+  options: Partial<{
+    volume: number
+    muted: boolean
+    label: string
+    mediaStartTime: number
+  }> = {}
+): SoundOverlay {
+  return {
+    id,
+    type: OverlayType.SOUND,
+    startTime,
+    duration,
+    row,
+    src: audioUrl,
+    mediaStartTime: options.mediaStartTime || 0,
+    volume: options.volume || 0.6,
+    muted: options.muted || false,
+    selected: false,
+    label: options.label || 'Audio Track',
+    waveformData: undefined // Will be generated dynamically by useWaveform hook
+  }
+}
+
+// Quick utility to add a waveform track at runtime
+// Usage: addWaveformTrack('https://your-audio-url.com/file.mp3')
+export function addWaveformTrack(audioUrl: string, options: {
+  startTime?: number
+  duration?: number
+  row?: number
+  volume?: number
+  label?: string
+} = {}): SoundOverlay {
+  return createWaveformTrack(
+    `audio-${Date.now()}`, // Generate unique ID
+    audioUrl,
+    options.startTime || 0,
+    options.duration || 10,
+    options.row || 1,
+    {
+      volume: options.volume || 0.6,
+      label: options.label || 'Audio Track',
+      muted: false
+    }
+  )
+}
 
 // Helper function to generate additional demo overlays
 export function generateRandomOverlay(id: string, row: number): Overlay {
