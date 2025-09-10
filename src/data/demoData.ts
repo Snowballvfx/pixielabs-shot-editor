@@ -1,14 +1,15 @@
 import { Overlay, OverlayType, ClipOverlay, SoundOverlay, TextOverlay, ImageOverlay } from '../types/overlays'
 
 export const demoOverlays: Overlay[] = [
-  // Video clip on track 0 - trimmed from both ends to demonstrate dog-ears
+  // Video clip on track 0 - positioned AFTER its 1-frame transition-in
+  // Pattern: transition-in (0 -> 1 frame) -> video content starts at 1 frame
   // Original length: 15s, Speed: 1.0x, Effective length: 15s
   // Used: mediaStartTime(2s) + duration(8s) = 10s of 15s source
   // So trimmedIn = 2s/1.0 = 2s, trimmedOut = 15s - 10s = 5s
   {
     id: 'clip-1',
     type: OverlayType.CLIP,
-    startTime: 0,
+    startTime: 1/24, // Starts after 1 frame transition-in (~0.04167s at 24fps)
     duration: 8,
     row: 0,
     src: '/demo/video1.mp4',
@@ -25,12 +26,12 @@ export const demoOverlays: Overlay[] = [
     transitionOutId: 'clip-1-transition-out'
   },
   
-  // Transition in for clip-1
+  // Transition in for clip-1 - exactly 1 frame duration
   {
     id: 'clip-1-transition-in',
     type: OverlayType.TRANSITION_IN,
-    startTime: 0, // for demo start at 0 since negative not supported
-    duration: 0.5,
+    startTime: 0, // Starts at timeline beginning
+    duration: 1/24, // Exactly 1 frame duration (~0.04167s at 24fps)
     row: 0,
     selected: false,
     parentClipId: 'clip-1',
@@ -41,7 +42,7 @@ export const demoOverlays: Overlay[] = [
   {
     id: 'clip-1-transition-out',
     type: OverlayType.TRANSITION_OUT,
-    startTime: 8, // starts when main clip ends
+    startTime: 1/24 + 8, // starts when main clip ends (~8.04167s)
     duration: 0.5,
     row: 0,
     selected: false,
@@ -49,14 +50,14 @@ export const demoOverlays: Overlay[] = [
     transitionType: 'fade'
   },
   
-  // Another video clip on track 0 - with speed change and trimming
+  // Second video clip on track 0 - separated from clip-1 with gap
   // Original length: 12s, Speed: 2.0x, Effective length: 6s
   // Used: mediaStartTime(1s) + duration(4s) = 5s of 6s effective (10s of 12s source)
   // So trimmedIn = 1s/2.0 = 0.5s timeline, trimmedOut = 6s - 5s = 1s timeline
   {
     id: 'clip-2',
     type: OverlayType.CLIP,
-    startTime: 10,
+    startTime: 10.5, // starts with gap after clip-1 (clip-1 ends at ~8.54167s, gap until 10.5s)
     duration: 4,
     row: 0,
     src: '/demo/video2.mp4',
@@ -77,7 +78,7 @@ export const demoOverlays: Overlay[] = [
   {
     id: 'clip-2-transition-in',
     type: OverlayType.TRANSITION_IN,
-    startTime: 9.5, // clip start - duration
+    startTime: 10.0, // clip start - duration (10.5 - 0.5 = 10.0)
     duration: 0.5,
     row: 0,
     selected: false,
@@ -89,7 +90,7 @@ export const demoOverlays: Overlay[] = [
   {
     id: 'clip-2-transition-out',
     type: OverlayType.TRANSITION_OUT,
-    startTime: 14, // clip end (10 + 4)
+    startTime: 14.5, // clip end (10.5 + 4 = 14.5)
     duration: 0.5,
     row: 0,
     selected: false,

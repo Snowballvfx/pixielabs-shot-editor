@@ -2,7 +2,7 @@ import React, { useMemo } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
 import { useClipInteraction } from '../hooks/useClipInteraction'
 import { useDragDrop } from '../hooks/useDragDrop'
-import { OverlayType } from '../types/overlays'
+import { OverlayType, MergedTransitionOverlay, ClipOverlay } from '../types/overlays'
 import Track from './Track'
 import DropPreview from './DropPreview'
 import { formatTimelineGrid } from '../utils/timeFormat'
@@ -28,7 +28,35 @@ const TimelineTracks: React.FC = () => {
   const trackData = useMemo(() => {
     const tracks: { [key: number]: typeof state.overlays } = {}
     
-    state.overlays.forEach(overlay => {
+    // First, find all merged transitions to identify which individual transitions should be hidden
+    const mergedTransitions = state.overlays.filter(overlay => overlay.type === OverlayType.TRANSITION_MERGED)
+    const hiddenTransitionIds = new Set<string>()
+    
+    mergedTransitions.forEach(merged => {
+      const mergedOverlay = merged as MergedTransitionOverlay
+      
+      // Find the clips involved in this merged transition
+      const fromClip = state.overlays.find(o => o.id === mergedOverlay.fromClipId) as ClipOverlay
+      const toClip = state.overlays.find(o => o.id === mergedOverlay.toClipId) as ClipOverlay
+      
+      // Hide the transition-out of the fromClip and transition-in of the toClip
+      if (fromClip && fromClip.transitionOutId) {
+        hiddenTransitionIds.add(fromClip.transitionOutId)
+      }
+      if (toClip && toClip.transitionInId) {
+        hiddenTransitionIds.add(toClip.transitionInId)
+      }
+    })
+    
+    // Filter overlays to exclude hidden transitions
+    const visibleOverlays = state.overlays.filter(overlay => !hiddenTransitionIds.has(overlay.id))
+    
+    if (hiddenTransitionIds.size > 0) {
+      console.log('Hiding transitions due to merged transitions:', Array.from(hiddenTransitionIds))
+      console.log('Total overlays:', state.overlays.length, 'Visible overlays:', visibleOverlays.length)
+    }
+    
+    visibleOverlays.forEach(overlay => {
       if (!tracks[overlay.row]) {
         tracks[overlay.row] = []
       }
@@ -77,6 +105,11 @@ const TimelineTracks: React.FC = () => {
   const majorGridInterval = 5 // seconds
   const minorGridInterval = 1 // seconds
   
+  // Calculate frame visibility
+  const frameDuration = 1 / settings.fps
+  const framePixelWidth = frameDuration * settings.pixelsPerSecond * state.zoom
+  const showFrameGrid = framePixelWidth >= 8 // Show frame grid when frames are at least 8px wide
+  
   // Generate grid lines
   for (let time = 0; time <= state.duration; time += minorGridInterval) {
     const x = time * settings.pixelsPerSecond * state.zoom + 60 // Add 60px offset for track labels
@@ -118,6 +151,55 @@ const TimelineTracks: React.FC = () => {
           {formatTimelineGrid(time, { fps: settings.fps })}
         </div>
       )
+    }
+  }
+  
+  // Add frame grid lines when zoomed in enough
+  if (showFrameGrid) {
+    for (let time = 0; time <= state.duration; time += frameDuration) {
+      const x = time * settings.pixelsPerSecond * state.zoom + 60
+      const frameNumber = Math.round(time * settings.fps)
+      
+      // Skip if this coincides with a second mark
+      if (frameNumber % settings.fps !== 0) {
+        gridLines.push(
+          <div
+            key={`frame-${frameNumber}`}
+            className="timeline-frame-line"
+            style={{
+              position: 'absolute',
+              left: `${x}px`,
+              top: 0,
+              bottom: 0,
+              width: '1px',
+              backgroundColor: '#555',
+              opacity: 0.3,
+              pointerEvents: 'none'
+            }}
+          />
+        )
+        
+        // Add frame number labels for every 5th frame (if there's space)
+        if (frameNumber % 5 === 0 && framePixelWidth >= 20) {
+          gridLines.push(
+            <div
+              key={`frame-label-${frameNumber}`}
+              className="timeline-frame-label"
+              style={{
+                position: 'absolute',
+                left: `${x + 2}px`,
+                top: '16px',
+                fontSize: '8px',
+                color: '#666',
+                pointerEvents: 'none',
+                userSelect: 'none'
+              }}
+            >
+              {frameNumber}
+            </div>
+          )
+        }
+      }
     }
   }
   

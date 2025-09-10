@@ -67,6 +67,80 @@ export function formatTimelineGrid(time: number, options: TimeFormatOptions = {}
 }
 
 /**
+ * Calculate the minimum duration (1 frame) based on frame rate
+ * @param fps Frames per second
+ * @returns Minimum duration in seconds
+ */
+export function getMinimumDuration(fps: number = 24): number {
+  return 1 / fps
+}
+
+/**
+ * Calculates the zoom level needed to make individual frames visible
+ * @param fps Frames per second
+ * @param pixelsPerSecond Base pixels per second setting
+ * @param minFramePixels Minimum pixels per frame for visibility (default 8)
+ * @returns Required zoom level for frame visibility
+ */
+export function getFrameVisibleZoom(fps: number = 24, pixelsPerSecond: number = 50, minFramePixels: number = 8): number {
+  const frameDuration = 1 / fps // Duration of one frame in seconds
+  const currentFramePixels = frameDuration * pixelsPerSecond // Current pixels per frame at 1x zoom
+  const requiredZoom = minFramePixels / currentFramePixels // Zoom needed for minimum visibility
+  return Math.ceil(requiredZoom * 10) / 10 // Round up to nearest 0.1
+}
+
+/**
+ * Gets frame-aware zoom presets for the timeline
+ * @param fps Frames per second
+ * @param pixelsPerSecond Base pixels per second setting
+ * @returns Array of zoom levels including frame-visible zoom
+ */
+export function getZoomPresets(fps: number = 24, pixelsPerSecond: number = 50): number[] {
+  const frameVisibleZoom = getFrameVisibleZoom(fps, pixelsPerSecond)
+  const basePresets = [0.1, 0.25, 0.5, 1, 2, 3, 5]
+  
+  // Add frame-visible zoom if it's not already covered
+  const presetsWithFrame = [...basePresets]
+  if (!basePresets.some(preset => Math.abs(preset - frameVisibleZoom) < 0.1)) {
+    presetsWithFrame.push(frameVisibleZoom)
+    presetsWithFrame.sort((a, b) => a - b)
+  }
+  
+  return presetsWithFrame
+}
+
+/**
+ * Snaps a duration to grid while ensuring it doesn't fall below minimum
+ * @param duration Duration in seconds to snap
+ * @param gridSize Grid size in seconds (from settings)
+ * @param minDuration Minimum allowed duration in seconds
+ * @returns Snapped duration that respects minimum constraint
+ */
+export function snapDurationToGrid(duration: number, gridSize: number, minDuration: number): number {
+  const snapped = Math.round(duration / gridSize) * gridSize
+  return Math.max(minDuration, snapped)
+}
+
+/**
+ * Calculates the correct position for a transition-in relative to its parent clip
+ * For the first clip in the timeline, transition-in starts at 0 and clip starts after it
+ * For other clips, transition-in starts before the clip (standard behavior)
+ * @param parentClipStartTime Start time of the parent clip
+ * @param transitionDuration Duration of the transition
+ * @param isFirstClip Whether this is the first clip in the timeline
+ * @returns Start time for the transition-in
+ */
+export function getTransitionInPosition(parentClipStartTime: number, transitionDuration: number, isFirstClip: boolean = false): number {
+  if (isFirstClip && parentClipStartTime <= transitionDuration) {
+    // For first clip: transition starts at 0, clip starts after transition
+    return 0
+  } else {
+    // Standard behavior: transition starts before clip
+    return Math.max(0, parentClipStartTime - transitionDuration)
+  }
+}
+
+/**
  * Legacy format function for backwards compatibility
  * @deprecated Use formatTimecode instead
  */

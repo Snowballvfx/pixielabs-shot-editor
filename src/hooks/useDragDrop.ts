@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
 import { Overlay, OverlayType, ClipOverlay, TransitionInOverlay, TransitionOutOverlay } from '../types/overlays'
+import { getMinimumDuration } from '../utils/timeFormat'
 
 // Interface for clip data being dragged from gallery
 export interface GalleryClipData {
@@ -65,8 +66,13 @@ export const useDragDrop = () => {
     }
     
     // Otherwise, trim to fit the remaining timeline space
-    return Math.max(0.1, remainingTimelineSpace) // Minimum 0.1s duration
+    return Math.max(getMinDuration(), remainingTimelineSpace) // Minimum 1 frame duration
   }, [state.duration])
+
+  // Get minimum duration (1 frame) based on current FPS setting
+  const getMinDuration = useCallback(() => {
+    return getMinimumDuration(settings.fps)
+  }, [settings.fps])
 
   // Start drag operation
   const startDrag = useCallback((clipData: GalleryClipData, event: React.DragEvent) => {

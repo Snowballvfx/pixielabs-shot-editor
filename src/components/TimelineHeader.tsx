@@ -3,11 +3,12 @@ import { usePlayback } from '../hooks/usePlayback'
 import { useTimeline } from '../contexts/TimelineContext'
 import { useHotkeys } from 'react-hotkeys-hook'
 import { OverlayType } from '../types/overlays'
-import { Play, Pause, SkipBack, SkipForward, X, Undo2, Redo2, Trash2 } from 'lucide-react'
+import { Play, Pause, SkipBack, SkipForward, X, Undo2, Redo2, Trash2, ZoomIn } from 'lucide-react'
+import { getFrameVisibleZoom } from '../utils/timeFormat'
 
 const TimelineHeader: React.FC = () => {
   const { currentTime, duration, isPlaying, togglePlayPause, skipToStart, skipToEnd, formatTime } = usePlayback()
-  const { state, actions } = useTimeline()
+  const { state, actions, settings } = useTimeline()
   
   const canUndo = actions.canUndo()
   const canRedo = actions.canRedo()
@@ -17,16 +18,25 @@ const TimelineHeader: React.FC = () => {
     actions.setZoom(zoom)
   }
 
+  const handleFrameZoom = () => {
+    const frameZoom = getFrameVisibleZoom(settings.fps, settings.pixelsPerSecond)
+    actions.setZoom(frameZoom)
+  }
+
   // Keyboard shortcuts similar to main app
   useHotkeys('alt+space', (e) => { e.preventDefault(); togglePlayPause() }, { enableOnFormTags: true }, [togglePlayPause])
   useHotkeys('alt+=, alt+plus', (e) => {
     e.preventDefault()
-    actions.setZoom(Math.min(state.zoom + 0.1, 5))
+    actions.setZoom(Math.min(state.zoom + 0.1, 20))
   }, {}, [state.zoom, actions])
   useHotkeys('alt+-, alt+minus', (e) => {
     e.preventDefault()
     actions.setZoom(Math.max(state.zoom - 0.1, 0.1))
   }, {}, [state.zoom, actions])
+  useHotkeys('alt+f', (e) => {
+    e.preventDefault()
+    handleFrameZoom()
+  }, {}, [handleFrameZoom])
   
   // Undo/Redo keyboard shortcuts
   useHotkeys('ctrl+z', (e) => {
@@ -150,12 +160,21 @@ const TimelineHeader: React.FC = () => {
           id="zoom-slider"
           type="range"
           min="0.1"
-          max="5"
+          max="20"
           step="0.1"
           value={state.zoom}
           onChange={handleZoomChange}
           style={{ marginLeft: '8px', width: '100px' }}
         />
+        
+        <button 
+          className="control-button"
+          onClick={handleFrameZoom}
+          title="Zoom to show individual frames"
+          style={{ marginLeft: '8px' }}
+        >
+          <ZoomIn size={16} />
+        </button>
         
         <button 
           className="control-button"
