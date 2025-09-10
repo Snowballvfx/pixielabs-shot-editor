@@ -5,6 +5,7 @@ import { useDragDrop } from '../hooks/useDragDrop'
 import { OverlayType } from '../types/overlays'
 import Track from './Track'
 import DropPreview from './DropPreview'
+import { formatTimelineGrid } from '../utils/timeFormat'
 
 const TimelineTracks: React.FC = () => {
   const { state, settings } = useTimeline()
@@ -114,7 +115,7 @@ const TimelineTracks: React.FC = () => {
             userSelect: 'none'
           }}
         >
-          {Math.floor(time / 60)}:{(time % 60).toString().padStart(2, '0')}
+          {formatTimelineGrid(time, { fps: settings.fps })}
         </div>
       )
     }

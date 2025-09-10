@@ -90,7 +90,8 @@ const initialSettings: TimelineSettings = {
   pixelsPerSecond: 50,
   trackHeight: 80,
   snapToGrid: true,
-  gridSize: 0.1 // 100ms
+  gridSize: 0.1, // 100ms
+  fps: 24 // Frames per second for timecode display
 }
 
 const initialState: TimelineContextState = {

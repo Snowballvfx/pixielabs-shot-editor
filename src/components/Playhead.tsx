@@ -1,5 +1,6 @@
 import React from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
+import { formatTimecode } from '../utils/timeFormat'
 
 const Playhead: React.FC = () => {
   const { state, settings } = useTimeline()
@@ -55,18 +56,10 @@ const Playhead: React.FC = () => {
           pointerEvents: 'none'
         }}
       >
-        {formatTime(state.currentTime)}
+        {formatTimecode(state.currentTime, { fps: settings.fps, showFrames: true, showHours: true })}
       </div>
     </div>
   )
-}
-
-// Helper function to format time
-function formatTime(time: number): string {
-  const minutes = Math.floor(time / 60)
-  const seconds = Math.floor(time % 60)
-  const milliseconds = Math.floor((time % 1) * 100)
-  return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(2, '0')}`
 }
 
 export default Playhead

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
+import { formatTimecode } from '../utils/timeFormat'
 
 export function usePlayback() {
-  const { state, actions } = useTimeline()
+  const { state, actions, settings } = useTimeline()
   const animationFrameRef = useRef<number>()
   const lastTimeRef = useRef<number>(0)
   
@@ -75,11 +76,8 @@ export function usePlayback() {
   }, [seek, state.duration])
   
   const formatTime = useCallback((time: number) => {
-    const minutes = Math.floor(time / 60)
-    const seconds = Math.floor(time % 60)
-    const milliseconds = Math.floor((time % 1) * 100)
-    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(2, '0')}`
-  }, [])
+    return formatTimecode(time, { fps: settings.fps, showFrames: true, showHours: true })
+  }, [settings.fps])
   
   return {
     // State

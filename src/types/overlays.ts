@@ -136,6 +136,7 @@ export interface TimelineSettings {
   trackHeight: number
   snapToGrid: boolean
   gridSize: number
+  fps: number
 }
 
 export interface HistoryState {
