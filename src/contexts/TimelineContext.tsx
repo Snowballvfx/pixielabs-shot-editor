@@ -625,9 +625,42 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
         transitionType: (transitionOut as any).transitionType || (transitionIn as any).transitionType || 'fade'
       }
       
-      // Remove individual transitions and add merged one
+      // Position the rightClip (toClip) to start at the end of the merged transition
+      const correctRightClipStart = mergedStart + mergedDuration
+      const updatedRightClip = {
+        ...rightClip,
+        startTime: correctRightClipStart
+      }
+
+      // Update rightClip's transitions to follow it to the new position
+      const rightClipTransitionIn = state.history.present.overlays.find(o => o.id === (rightClip as any).transitionInId)
+      const rightClipTransitionOut = state.history.present.overlays.find(o => o.id === (rightClip as any).transitionOutId)
+
+      // Remove individual transitions and add merged one, update rightClip and its remaining transitions
       const updatedOverlays = state.history.present.overlays
         .filter(o => o.id !== transitionOutId && o.id !== transitionInId)
+        .map(o => {
+          if (o.id === rightClip.id) {
+            return updatedRightClip
+          }
+          // Update rightClip's remaining transition-in position (if it exists and wasn't removed)
+          if (rightClipTransitionIn && o.id === rightClipTransitionIn.id) {
+            return {
+              ...o,
+              startTime: correctRightClipStart - o.duration,
+              row: updatedRightClip.row
+            }
+          }
+          // Update rightClip's remaining transition-out position (if it exists)
+          if (rightClipTransitionOut && o.id === rightClipTransitionOut.id) {
+            return {
+              ...o,
+              startTime: correctRightClipStart + updatedRightClip.duration,
+              row: updatedRightClip.row
+            }
+          }
+          return o
+        })
         .concat(mergedTransition as any)
       
       const newState = {

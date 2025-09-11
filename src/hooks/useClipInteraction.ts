@@ -238,6 +238,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       const parentClip = state.overlays.find(o => o.id === parentClipId)
 
       if (parentClip) {
+        // Always include parent clip for transitions
         related.push(parentClip)
 
         // Find sibling transition
@@ -250,6 +251,38 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           const siblingTransition = state.overlays.find(o => o.id === parentClip.transitionInId)
           if (siblingTransition) {
             related.push(siblingTransition)
+          }
+        }
+
+        // If parent clip is part of a merged transition, include the entire merged transition group
+        const mergedTransition = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED &&
+          ((o as MergedTransitionOverlay).fromClipId === parentClip.id || (o as MergedTransitionOverlay).toClipId === parentClip.id)) as MergedTransitionOverlay | undefined
+
+        if (mergedTransition) {
+          console.log(`${overlay.type === OverlayType.TRANSITION_IN ? 'Transition-in' : 'Transition-out'} movement: including entire merged transition group`)
+          
+          // Include the merged transition itself
+          related.push(mergedTransition)
+          
+          // Include the other clip in the merged transition
+          const otherClipId = mergedTransition.fromClipId === parentClip.id ? mergedTransition.toClipId : mergedTransition.fromClipId
+          const otherClip = state.overlays.find(o => o.id === otherClipId)
+          if (otherClip) {
+            related.push(otherClip)
+            
+            // Include the other clip's transitions
+            if ((otherClip as any).transitionInId) {
+              const otherIn = state.overlays.find(o => o.id === (otherClip as any).transitionInId)
+              if (otherIn) {
+                related.push(otherIn)
+              }
+            }
+            if ((otherClip as any).transitionOutId) {
+              const otherOut = state.overlays.find(o => o.id === (otherClip as any).transitionOutId)
+              if (otherOut) {
+                related.push(otherOut)
+              }
+            }
           }
         }
       }
@@ -796,14 +829,22 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 const parentNewStart = parent.startTime + proposedDelta
                 const tInStart = parentNewStart - relatedOverlay.duration
                 if (tInStart < 0) {
-                  // Calculate maximum allowed delta to keep transition at 0
-                  // maxDelta = how much can parent move before transition goes below 0
-                  const maxDelta = relatedOverlay.duration - parent.startTime
-                  // If maxDelta is negative or zero, don't allow any leftward movement
-                  if (maxDelta <= 0) {
-                    boundaryConstrainedTarget = anchorCurrent.startTime // No movement allowed
+                  // Prevent any movement that would make transition-in go below frame 0
+                  // The minimum allowed parent position is where transition-in starts at frame 0
+                  const minAllowedParentStart = relatedOverlay.duration
+                  
+                  // If the parent is already at or below this minimum, don't allow leftward movement
+                  if (parent.startTime <= minAllowedParentStart) {
+                    console.log('Movement blocked: transition-in already at frame 0 limit')
+                    boundaryConstrainedTarget = anchorCurrent.startTime // No leftward movement allowed
                   } else {
-                    boundaryConstrainedTarget = Math.min(boundaryConstrainedTarget, anchorCurrent.startTime - maxDelta)
+                    // Constrain the target to not go below the minimum
+                    const proposedParentStart = anchorCurrent.startTime + proposedDelta
+                    if (proposedParentStart < minAllowedParentStart) {
+                      // Adjust the target to keep parent at minimum allowed position
+                      boundaryConstrainedTarget = anchorCurrent.startTime - (parent.startTime - minAllowedParentStart)
+                      console.log('Movement constrained to prevent transition-in going below frame 0')
+                    }
                   }
                 }
               }
@@ -958,6 +999,18 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               const maxAllowedEnd = state.duration
               const boundaryConstrainedDuration = Math.max(minFrameDuration, Math.min(constrainedDuration, maxAllowedEnd - fromClip.startTime))
 
+              // Check if merged transition would become too small BEFORE updating fromClip
+              const newMergedStart = fromClip.startTime + snapToGrid(boundaryConstrainedDuration)
+              const originalMergedEnd = overlay.startTime + overlay.duration
+              const newMergedDuration = originalMergedEnd - newMergedStart
+
+              // Stop resizing if merged transition would become smaller than 2 frames
+              // This prevents the left edge from crossing past the right edge
+              if (newMergedDuration < minFrameDuration) {
+                console.log('Merged transition left resize blocked: would make transition smaller than 2 frames')
+                return // Stop the resize operation completely (both fromClip and merged transition)
+              }
+
               if (!checkCollision(fromClip, fromClip.startTime, boundaryConstrainedDuration)) {
                 // Calculate new trim values for the fromClip
                 const tempClip = {
@@ -974,17 +1027,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 })
 
                 // Update merged transition start to stay glued to fromClip end
-                // and adjust duration so the end stays in the same place
-                const newMergedStart = fromClip.startTime + snapToGrid(boundaryConstrainedDuration)
-                const originalMergedEnd = overlay.startTime + overlay.duration
-                const newMergedDuration = originalMergedEnd - newMergedStart
-
-                // Stop resizing if merged transition would become smaller than 2 frames
-                // This prevents the left edge from crossing past the right edge
-                if (newMergedDuration < minFrameDuration) {
-                  console.log('Merged transition left resize blocked: would make transition smaller than 2 frames')
-                  return // Stop the resize operation completely
-                }
+                // and adjust duration so the end stays in the same place (already calculated above)
 
                 actions.updateOverlayBatch(overlay.id, {
                   startTime: newMergedStart,
@@ -1058,6 +1101,55 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 if (wouldBeTransitionStart < 0) {
                   console.log('Left resize blocked: would push transition-in below frame 0')
                   return // Stop the resize operation completely
+                }
+              }
+            }
+
+            // Additional constraint for merged transitions: toClip cannot resize past merged transition start
+            const mergedAsTo = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).toClipId === clipOverlay.id) as MergedTransitionOverlay | undefined
+            if (mergedAsTo) {
+              // Calculate minimum position to maintain 2-frame merged transition duration
+              const minFrameDuration = 2 / settings.fps
+              const minAllowedToClipStart = mergedAsTo.startTime + minFrameDuration
+              
+              // toClip cannot resize left past the minimum position that would make merged transition < 2 frames
+              if (newStartTime < minAllowedToClipStart) {
+                console.log('Left resize blocked: would make merged transition smaller than 2 frames')
+                return // Stop the resize operation completely
+              }
+            }
+
+            // Additional constraint for merged transitions: fromClip cannot be resized to disconnect from merged transition
+            const mergedAsFrom = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).fromClipId === clipOverlay.id) as MergedTransitionOverlay | undefined
+            if (mergedAsFrom) {
+              // Only prevent disconnection when shrinking the clip (not when extending left)
+              const isExtending = newStartTime < currentDragInfo.originalStartTime
+              if (!isExtending) {
+                // fromClip left resize should not disconnect from merged transition when shrinking
+                const wouldBeClipEnd = newStartTime + boundaryConstrainedDuration
+                if (wouldBeClipEnd < mergedAsFrom.startTime) {
+                  console.log('Left resize blocked: fromClip would disconnect from merged transition')
+                  return // Stop the resize operation completely
+                }
+              } else {
+                // When extending left, check if pushing everything forward would exceed timeline duration
+                const extensionAmount = currentDragInfo.originalStartTime - newStartTime
+                const toClip = state.overlays.find(o => o.id === mergedAsFrom.toClipId)
+                if (toClip) {
+                  // Calculate where toClip would end up after being pushed
+                  const newToClipStart = toClip.startTime + extensionAmount
+                  const newToClipEnd = newToClipStart + toClip.duration
+                  
+                  // Check if toClip's transition-out would exceed timeline
+                  const toClipTransitionOut = state.overlays.find(o => o.id === (toClip as any).transitionOutId)
+                  const finalEndPosition = toClipTransitionOut 
+                    ? newToClipEnd + toClipTransitionOut.duration 
+                    : newToClipEnd
+                  
+                  if (finalEndPosition > state.duration) {
+                    console.log('Left resize blocked: would push elements beyond timeline duration')
+                    return // Stop the resize operation completely
+                  }
                 }
               }
             }
@@ -1385,6 +1477,58 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                   console.log('Right resize blocked: would push transition-out beyond timeline end')
                   return // Stop the resize operation completely
                 }
+              }
+            }
+
+            // Additional constraint for merged transitions: fromClip behavior depends on extending vs shrinking
+            const mergedAsFrom = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).fromClipId === clipOverlay.id) as MergedTransitionOverlay | undefined
+            if (mergedAsFrom) {
+              const isExtending = requestedDuration > currentDragInfo.originalDuration
+              
+              if (!isExtending) {
+                // When shrinking: prevent making merged transition smaller than 2 frames
+                const minFrameDuration = 2 / settings.fps
+                const mergedEnd = mergedAsFrom.startTime + mergedAsFrom.duration
+                const maxAllowedFromClipEnd = mergedEnd - minFrameDuration
+                
+                const wouldBeClipEnd = currentStartTime + requestedDuration
+                if (wouldBeClipEnd > maxAllowedFromClipEnd) {
+                  console.log('Right resize blocked: would make merged transition smaller than 2 frames')
+                  return // Stop the resize operation completely
+                }
+              } else {
+                // When extending: check if pushing everything forward would exceed timeline duration
+                const extensionAmount = requestedDuration - currentDragInfo.originalDuration
+                const toClip = state.overlays.find(o => o.id === mergedAsFrom.toClipId)
+                if (toClip) {
+                  // Calculate where toClip would end up after being pushed
+                  const newToClipStart = toClip.startTime + extensionAmount
+                  const newToClipEnd = newToClipStart + toClip.duration
+                  
+                  // Check if toClip's transition-out would exceed timeline
+                  const toClipTransitionOut = state.overlays.find(o => o.id === (toClip as any).transitionOutId)
+                  const finalEndPosition = toClipTransitionOut 
+                    ? newToClipEnd + toClipTransitionOut.duration 
+                    : newToClipEnd
+                  
+                  if (finalEndPosition > state.duration) {
+                    console.log('Right resize blocked: would push elements beyond timeline duration')
+                    return // Stop the resize operation completely
+                  }
+                }
+              }
+            }
+
+            // Additional constraint for merged transitions: toClip cannot be resized to make merged transition invalid
+            const mergedAsTo = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).toClipId === clipOverlay.id) as MergedTransitionOverlay | undefined
+            if (mergedAsTo) {
+              // toClip right resize should maintain minimum duration and not interfere with merged transition
+              const mergedEnd = mergedAsTo.startTime + mergedAsTo.duration
+              const wouldBeClipEnd = currentStartTime + requestedDuration
+              // Ensure the clip doesn't shrink so much that it disconnects from the merged transition
+              if (wouldBeClipEnd < mergedEnd) {
+                console.log('Right resize blocked: toClip would disconnect from merged transition')
+                return // Stop the resize operation completely
               }
             }
           }
