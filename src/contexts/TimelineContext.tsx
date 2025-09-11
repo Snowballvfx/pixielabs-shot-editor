@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, ReactNode } from 'react'
+import { createContext, useContext, useReducer, useMemo, ReactNode } from 'react'
 import { Overlay, TimelineState, DragInfo, TimelineSettings, HistoryState, MergedTransitionOverlay, OverlayType, TransitionInOverlay, TransitionOutOverlay } from '../types/overlays'
 import { allDemoOverlays } from '../data/demoData'
 
@@ -7,6 +7,7 @@ interface TimelineContextType {
   state: TimelineState
   settings: TimelineSettings
   dragInfo: DragInfo | null
+  dragStartState: TimelineState | null
   actions: {
     // Playback actions
     play: () => void
@@ -602,13 +603,13 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
       const leftClip = outParentClip.startTime <= inParentClip.startTime ? outParentClip : inParentClip
       const rightClip = leftClip.id === outParentClip.id ? inParentClip : outParentClip
 
-      // Compute merged start and end as the span covering both transitions
-      const startA = transitionOut.startTime
-      const endA = transitionOut.startTime + transitionOut.duration
-      const startB = transitionIn.startTime
-      const endB = transitionIn.startTime + transitionIn.duration
-      const mergedStart = Math.min(startA, startB)
-      const mergedEnd = Math.max(endA, endB)
+      // Compute merged start and end to connect the clips properly
+      // The merged transition should start where the left clip ends and end where the right clip starts
+      const leftClipEnd = leftClip.startTime + leftClip.duration
+      const rightClipStart = rightClip.startTime
+      
+      const mergedStart = leftClipEnd
+      const mergedEnd = rightClipStart
       const mergedDuration = Math.max(0.05, mergedEnd - mergedStart)
       
       // Create merged transition
@@ -697,7 +698,7 @@ const TimelineContext = createContext<TimelineContextType | null>(null)
 export function TimelineProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(timelineReducer, initialState)
   
-  const actions = {
+  const actions = useMemo(() => ({
     play: () => dispatch({ type: 'PLAY' }),
     pause: () => dispatch({ type: 'PAUSE' }),
     seek: (time: number) => dispatch({ type: 'SEEK', payload: time }),
@@ -733,12 +734,13 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'MERGE_TRANSITIONS', payload: { transitionOutId, transitionInId } }),
     splitMergedTransition: (mergedTransitionId: string) => 
       dispatch({ type: 'SPLIT_MERGED_TRANSITION', payload: mergedTransitionId })
-  }
+  }), [dispatch])
   
   const contextValue: TimelineContextType = {
     state: state.history.present,
     settings: state.settings,
     dragInfo: state.dragInfo,
+    dragStartState: state.dragStartState,
     actions
   }
   

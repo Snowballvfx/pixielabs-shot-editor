@@ -24,7 +24,7 @@ const Clip: React.FC<ClipProps> = ({ overlay }) => {
       // Update timeline duration to match audio length
       actions.setDuration(audioDuration)
     }
-  }, [audioDuration, overlay.type, actions, overlay.id])
+  }, [audioDuration, overlay.type, actions])
   
   // Check if this is a waveform track (non-interactive)
   const isWaveformTrack = overlay.type === OverlayType.SOUND
