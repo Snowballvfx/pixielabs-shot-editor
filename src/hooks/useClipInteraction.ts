@@ -977,7 +977,14 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 // and adjust duration so the end stays in the same place
                 const newMergedStart = fromClip.startTime + snapToGrid(boundaryConstrainedDuration)
                 const originalMergedEnd = overlay.startTime + overlay.duration
-                const newMergedDuration = Math.max(minFrameDuration, originalMergedEnd - newMergedStart)
+                const newMergedDuration = originalMergedEnd - newMergedStart
+
+                // Stop resizing if merged transition would become smaller than 2 frames
+                // This prevents the left edge from crossing past the right edge
+                if (newMergedDuration < minFrameDuration) {
+                  console.log('Merged transition left resize blocked: would make transition smaller than 2 frames')
+                  return // Stop the resize operation completely
+                }
 
                 actions.updateOverlayBatch(overlay.id, {
                   startTime: newMergedStart,
@@ -1291,6 +1298,14 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               const maxEndTime = Math.min(newToClipStart + constrainedDuration, state.duration)
               const boundaryConstrainedDuration = Math.max(minFrameDuration, maxEndTime - newToClipStart)
 
+              // Check merged transition minimum duration BEFORE updating toClip
+              // This prevents toClip from moving when the transition would become too small
+              const wouldBeMergedDuration = snapToGrid(newToClipStart) - overlay.startTime
+              if (wouldBeMergedDuration < minFrameDuration) {
+                console.log('Merged transition right resize blocked: would make transition smaller than 2 frames')
+                return // Stop the resize operation completely before updating toClip
+              }
+
               if (!checkCollision(toClip, newToClipStart, boundaryConstrainedDuration)) {
                 // When left-resizing toClip, calculate new mediaStartTime (in source time)
                 const timeShift = newToClipStart - toClip.startTime
@@ -1316,9 +1331,9 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
 
                 // Update merged transition end to stay glued to toClip start
                 const newMergedDuration = snapToGrid(newToClipStart) - overlay.startTime
-                const minFrameDuration = 2 / settings.fps
+                
                 actions.updateOverlayBatch(overlay.id, {
-                  duration: Math.max(minFrameDuration, newMergedDuration)
+                  duration: snapToGrid(newMergedDuration)
                 })
 
                 // Update toClip's transition-in if it exists
