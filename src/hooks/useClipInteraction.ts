@@ -1,7 +1,6 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, useEffect } from 'react'
 import { useTimeline } from '../contexts/TimelineContext'
 import { Overlay, DragInfo, OverlayType, TransitionInOverlay, TransitionOutOverlay, MergedTransitionOverlay, ClipOverlay } from '../types/overlays'
-import { getMinimumDuration } from '../utils/timeFormat'
 
 interface UseClipInteractionOptions {
   onDragStart?: (overlay: Overlay) => void
@@ -14,37 +13,241 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   const [isDragging, setIsDragging] = useState(false)
   const [isTimelineScrubbing, setIsTimelineScrubbing] = useState(false)
   const dragThreshold = 5 // pixels
-  
-  // Get minimum duration (1 frame) based on current FPS setting
-  const getMinDuration = useCallback(() => {
-    return getMinimumDuration(settings.fps)
-  }, [settings.fps])
-  
+
   const timelineRef = useRef<HTMLDivElement>(null)
   const stateRef = useRef(state)
   stateRef.current = state // Always keep the ref updated with current state
 
+  // Post-move processor: snap clip if overlapping, then check for transition merges.
+  // If a snap occurred, re-run once to process merges after the snap (bounded by maxIterations)
+  const processAfterMove = (overlayId: string, iteration = 0) => {
+    if (iteration > 1)
+      return
+    // Defer to ensure all batched updates have applied
+    setTimeout(() => {
+      const currentState = stateRef.current
+      const currentOverlay = currentState.overlays.find(o => o.id === overlayId)
+      if (!currentOverlay)
+        return
+
+      let snapped = false
+      if (currentOverlay.type === OverlayType.CLIP) {
+        const snappedTime = snapOverlappingClip(currentOverlay, currentState)
+        if (snappedTime !== currentOverlay.startTime) {
+          const delta = snapToGrid(snappedTime - currentOverlay.startTime)
+          const relatedOverlays = getRelatedOverlays(currentOverlay)
+
+          // Update clips first
+          relatedOverlays.forEach(rel => {
+            if (rel.type === OverlayType.CLIP) {
+              const newStart = snapToGrid(rel.startTime + delta)
+              actions.updateOverlay(rel.id, { startTime: newStart })
+            }
+          })
+
+          // Then update transitions relative to their new clip positions
+          setTimeout(() => {
+            const freshState = stateRef.current
+            console.log('processAfterMove: updating transition positions after snap')
+            relatedOverlays.forEach(rel => {
+              if (rel.type === OverlayType.TRANSITION_IN || rel.type === OverlayType.TRANSITION_OUT) {
+                const parentClipId = (rel as TransitionInOverlay | TransitionOutOverlay).parentClipId
+                const parentClip = freshState.overlays.find(o => o.id === parentClipId)
+                if (parentClip) {
+                  let newTransitionStart
+                  if (rel.type === OverlayType.TRANSITION_IN) {
+                    newTransitionStart = parentClip.startTime - rel.duration
+                  } else {
+                    newTransitionStart = parentClip.startTime + parentClip.duration
+                  }
+                  console.log('processAfterMove: updating transition', rel.id, 'from', rel.startTime, 'to', snapToGrid(newTransitionStart))
+                  actions.updateOverlay(rel.id, { startTime: snapToGrid(newTransitionStart), row: parentClip.row })
+                }
+              } else if (rel.type === OverlayType.TRANSITION_MERGED) {
+                const merged = rel as MergedTransitionOverlay
+                const fromClip = freshState.overlays.find(o => o.id === merged.fromClipId)
+                if (fromClip) {
+                  const mergedStart = snapToGrid(fromClip.startTime + fromClip.duration)
+                  console.log('processAfterMove: updating merged transition position', merged.id, 'to', mergedStart)
+                  actions.updateOverlay(merged.id, { startTime: mergedStart, row: fromClip.row })
+                }
+              }
+            })
+          }, 0)
+
+          snapped = true
+        }
+      }
+
+      // After snap (or even if no snap), check transitions in a new tick to read fresh positions
+      // Use longer delay if we snapped to ensure all transition updates are complete
+      const delay = snapped ? 20 : 0
+      setTimeout(() => {
+        const freshState = stateRef.current
+        const freshOverlay = freshState.overlays.find(o => o.id === overlayId) || currentOverlay
+        console.log('processAfterMove: transition checks for overlay', overlayId, 'after snap:', snapped)
+
+        const overlapCandidate = checkTransitionOverlaps(freshOverlay, freshState)
+        if (overlapCandidate) {
+          console.log('processAfterMove: transition overlap -> merging', overlapCandidate)
+          actions.mergeTransitions(overlapCandidate.transitionOutId, overlapCandidate.transitionInId)
+        }
+
+        const mergeCandidate = checkForTransitionMerge(freshOverlay, freshState)
+        if (mergeCandidate) {
+          console.log('processAfterMove: adjacent transition merge -> merging', mergeCandidate)
+          actions.mergeTransitions(mergeCandidate.transitionOutId, mergeCandidate.transitionInId)
+        }
+
+        // If we snapped, run once more to process merges after positions settled
+        if (snapped) {
+          processAfterMove(overlayId, iteration + 1)
+        }
+      }, delay)
+    }, 0)
+  }
+
+  // Check for any transition overlaps (with other transitions or clips)
+  const checkTransitionOverlaps = useCallback((changedOverlay: Overlay, currentState: typeof state) => {
+    if (changedOverlay.type !== OverlayType.TRANSITION_IN &&
+        changedOverlay.type !== OverlayType.TRANSITION_OUT &&
+        changedOverlay.type !== OverlayType.TRANSITION_MERGED) {
+      return null
+    }
+
+    const transitionEnd = changedOverlay.startTime + changedOverlay.duration
+
+    // Find any overlapping transitions on the same row
+    const overlappingTransitions = currentState.overlays.filter(other => {
+      if (other.id === changedOverlay.id || other.row !== changedOverlay.row)
+        return false
+      if (other.type !== OverlayType.TRANSITION_IN &&
+          other.type !== OverlayType.TRANSITION_OUT &&
+          other.type !== OverlayType.TRANSITION_MERGED) return false
+
+      const otherEnd = other.startTime + other.duration
+      // Check for overlap
+      return !(transitionEnd <= other.startTime || changedOverlay.startTime >= otherEnd)
+    })
+
+    if (overlappingTransitions.length > 0) {
+      // For now, return the first overlapping transition for potential merge
+      const firstOverlap = overlappingTransitions[0]
+      if (changedOverlay.type === OverlayType.TRANSITION_OUT && firstOverlap.type === OverlayType.TRANSITION_IN) {
+        return { transitionOutId: changedOverlay.id, transitionInId: firstOverlap.id }
+      } else if (changedOverlay.type === OverlayType.TRANSITION_IN && firstOverlap.type === OverlayType.TRANSITION_OUT) {
+        return { transitionOutId: firstOverlap.id, transitionInId: changedOverlay.id }
+      }
+    }
+
+    return null
+  }, [])
+
+  // Helper: check for transition merge conditions around a specific overlay only
+  const checkForTransitionMerge = useCallback((changedOverlay: Overlay, currentState: typeof state) => {
+    console.log('checkForTransitionMerge: Checking overlay', changedOverlay.id, 'type:', changedOverlay.type)
+
+    // Find base clip related to the changed overlay
+    const getBaseClip = (o: Overlay) => {
+      if (o.type === OverlayType.CLIP)
+         return o
+      if (o.type === OverlayType.TRANSITION_IN || o.type === OverlayType.TRANSITION_OUT) {
+        const parentClipId = (o as TransitionInOverlay | TransitionOutOverlay).parentClipId
+        return currentState.overlays.find(oo => oo.id === parentClipId && oo.type === OverlayType.CLIP)
+      }
+      if (o.type === OverlayType.TRANSITION_MERGED)
+         return null
+      return null
+    }
+    const baseClip = getBaseClip(changedOverlay)
+    console.log('checkForTransitionMerge: Base clip found:', baseClip?.id || 'none')
+    if (!baseClip)
+       return null
+
+    // Utility helpers
+    const clipsOnRow = currentState.overlays
+      .filter(o => o.type === OverlayType.CLIP && o.row === baseClip.row)
+      .sort((a, b) => a.startTime - b.startTime)
+
+    const baseIndex = clipsOnRow.findIndex(c => c.id === baseClip.id)
+    if (baseIndex === -1)
+       return null
+
+    const getTransitionOut = (clipId: string) => currentState.overlays.find(o => o.id === (currentState.overlays.find(c => c.id === clipId) as any)?.transitionOutId)
+    const getTransitionIn = (clipId: string) => currentState.overlays.find(o => o.id === (currentState.overlays.find(c => c.id === clipId) as any)?.transitionInId)
+
+    const hasMergedBetween = (fromClipId: string, toClipId: string) =>
+      currentState.overlays.some(o => o.type === OverlayType.TRANSITION_MERGED &&
+        (o as MergedTransitionOverlay).fromClipId === fromClipId &&
+        (o as MergedTransitionOverlay).toClipId === toClipId)
+
+    // Check right neighbor (baseClip -> nextClip)
+    const nextClip = clipsOnRow[baseIndex + 1]
+    console.log('checkForTransitionMerge: Checking right neighbor:', nextClip?.id || 'none')
+    if (nextClip && !hasMergedBetween(baseClip.id, nextClip.id)) {
+      // Only merge left clip's transition-out with right clip's transition-in
+      const leftOut = getTransitionOut(baseClip.id)
+      const rightIn = getTransitionIn(nextClip.id)
+      console.log('checkForTransitionMerge: Found transitions - leftOut:', leftOut?.id || 'none', 'rightIn:', rightIn?.id || 'none')
+      const noClipBetween = clipsOnRow.filter(c => c.startTime > baseClip.startTime && c.startTime < nextClip.startTime).length === 0
+      if (noClipBetween && leftOut && rightIn) {
+        const leftOutEnd = leftOut.startTime + leftOut.duration
+        const rightInStart = rightIn.startTime
+        console.log('checkForTransitionMerge: leftOut/rightIn timing ->', leftOutEnd, rightInStart, 'overlap?', rightInStart <= leftOutEnd)
+        console.log('checkForTransitionMerge: leftOut details ->', leftOut.startTime, '+', leftOut.duration, '=', leftOutEnd)
+        console.log('checkForTransitionMerge: rightIn details ->', rightIn.startTime)
+        if (rightInStart <= leftOutEnd) {
+          console.log('checkForTransitionMerge: MATCH (leftOut-rightIn)')
+          return { transitionOutId: leftOut.id, transitionInId: rightIn.id }
+        }
+      }
+    }
+
+    // Check left neighbor (prevClip -> baseClip)
+    const prevClip = clipsOnRow[baseIndex - 1]
+    console.log('checkForTransitionMerge: Checking left neighbor:', prevClip?.id || 'none')
+    if (prevClip && !hasMergedBetween(prevClip.id, baseClip.id)) {
+      // Only merge left (prevClip) out with baseClip in
+      const leftOut = getTransitionOut(prevClip.id)
+      const rightIn = getTransitionIn(baseClip.id)
+      console.log('checkForTransitionMerge: Found transitions (left neighbor) - leftOut:', leftOut?.id || 'none', 'rightIn:', rightIn?.id || 'none')
+      const noClipBetween = clipsOnRow.filter(c => c.startTime > prevClip.startTime && c.startTime < baseClip.startTime).length === 0
+      if (noClipBetween && leftOut && rightIn) {
+        const leftOutEnd = leftOut.startTime + leftOut.duration
+        const rightInStart = rightIn.startTime
+        console.log('checkForTransitionMerge: leftOut/rightIn timing ->', leftOutEnd, rightInStart, 'overlap?', rightInStart <= leftOutEnd)
+        console.log('checkForTransitionMerge: leftOut details ->', leftOut.startTime, '+', leftOut.duration, '=', leftOutEnd)
+        console.log('checkForTransitionMerge: rightIn details ->', rightIn.startTime)
+        if (rightInStart <= leftOutEnd) {
+          console.log('checkForTransitionMerge: MATCH (leftOut-rightIn) [left neighbor]')
+          return { transitionOutId: leftOut.id, transitionInId: rightIn.id }
+        }
+      }
+    }
+
+    return null
+  }, [])
+
   // Helper functions for grouped interactions
   const getRelatedOverlays = useCallback((overlay: Overlay): Overlay[] => {
-    const currentState = stateRef.current
     const related: Overlay[] = [overlay]
-    
+
     if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
       // For transitions, find the parent clip and sibling transition
       const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
-      const parentClip = currentState.overlays.find(o => o.id === parentClipId)
-      
+      const parentClip = state.overlays.find(o => o.id === parentClipId)
+
       if (parentClip) {
         related.push(parentClip)
-        
+
         // Find sibling transition
         if (overlay.type === OverlayType.TRANSITION_IN && parentClip.transitionOutId) {
-          const siblingTransition = currentState.overlays.find(o => o.id === parentClip.transitionOutId)
+          const siblingTransition = state.overlays.find(o => o.id === parentClip.transitionOutId)
           if (siblingTransition) {
             related.push(siblingTransition)
           }
         } else if (overlay.type === OverlayType.TRANSITION_OUT && parentClip.transitionInId) {
-          const siblingTransition = currentState.overlays.find(o => o.id === parentClip.transitionInId)
+          const siblingTransition = state.overlays.find(o => o.id === parentClip.transitionInId)
           if (siblingTransition) {
             related.push(siblingTransition)
           }
@@ -53,19 +256,19 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
       // For merged transitions, find the related clips and their remaining transitions
       const mergedTransition = overlay as MergedTransitionOverlay
-      const fromClip = currentState.overlays.find(o => o.id === mergedTransition.fromClipId)
-      const toClip = currentState.overlays.find(o => o.id === mergedTransition.toClipId)
-      
+      const fromClip = state.overlays.find(o => o.id === mergedTransition.fromClipId)
+      const toClip = state.overlays.find(o => o.id === mergedTransition.toClipId)
+
       if (fromClip) {
         related.push(fromClip)
         if ((fromClip as any).transitionInId) {
-          const tIn = currentState.overlays.find(o => o.id === (fromClip as any).transitionInId)
+          const tIn = state.overlays.find(o => o.id === (fromClip as any).transitionInId)
           if (tIn) {
             related.push(tIn)
           }
         }
         if ((fromClip as any).transitionOutId) {
-          const tOut = currentState.overlays.find(o => o.id === (fromClip as any).transitionOutId)
+          const tOut = state.overlays.find(o => o.id === (fromClip as any).transitionOutId)
           if (tOut) {
             related.push(tOut)
           }
@@ -74,13 +277,13 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       if (toClip) {
         related.push(toClip)
         if ((toClip as any).transitionInId) {
-          const tIn = currentState.overlays.find(o => o.id === (toClip as any).transitionInId)
+          const tIn = state.overlays.find(o => o.id === (toClip as any).transitionInId)
           if (tIn) {
             related.push(tIn)
           }
         }
         if ((toClip as any).transitionOutId) {
-          const tOut = currentState.overlays.find(o => o.id === (toClip as any).transitionOutId)
+          const tOut = state.overlays.find(o => o.id === (toClip as any).transitionOutId)
           if (tOut) {
             related.push(tOut)
           }
@@ -89,59 +292,57 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     } else {
       // For clips, find their transition overlays
       if (overlay.transitionInId) {
-        const transitionIn = currentState.overlays.find(o => o.id === overlay.transitionInId)
+        const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
         if (transitionIn) {
           related.push(transitionIn)
         }
       }
       if (overlay.transitionOutId) {
-        const transitionOut = currentState.overlays.find(o => o.id === overlay.transitionOutId)
+        const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
         if (transitionOut) {
           related.push(transitionOut)
         }
       }
 
       // If this clip participates in a merged transition, also include the other clip and merged overlay
-      const merged = currentState.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED &&
+      const merged = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED &&
         ((o as MergedTransitionOverlay).fromClipId === overlay.id || (o as MergedTransitionOverlay).toClipId === overlay.id)) as MergedTransitionOverlay | undefined
       if (merged) {
         related.push(merged)
         const otherClipId = merged.fromClipId === overlay.id ? merged.toClipId : merged.fromClipId
-        const otherClip = currentState.overlays.find(o => o.id === otherClipId)
+        const otherClip = state.overlays.find(o => o.id === otherClipId)
         if (otherClip) {
           related.push(otherClip)
           // Include other clip's transitions so they stay attached while dragging either clip
           if ((otherClip as any).transitionInId) {
-            const otherIn = currentState.overlays.find(o => o.id === (otherClip as any).transitionInId)
+            const otherIn = state.overlays.find(o => o.id === (otherClip as any).transitionInId)
             if (otherIn) {
               related.push(otherIn)
             }
           }
-          if ((otherClip as any).transitionOutId) {
-            const otherOut = currentState.overlays.find(o => o.id === (otherClip as any).transitionOutId)
-            if (otherOut) {
-              related.push(otherOut)
-            }
+                      if ((otherClip as any).transitionOutId) {
+              const otherOut = state.overlays.find(o => o.id === (otherClip as any).transitionOutId)
+              if (otherOut) {
+                related.push(otherOut)
+              }
           }
         }
       }
     }
-    
+
     return related
-  }, [])
-  
+  }, [state.overlays])
+
   // Convert pixel position to time (accounting for zoom and track label offset)
   const pixelToTime = useCallback((pixel: number): number => {
-    const currentState = stateRef.current
-    return pixel / (settings.pixelsPerSecond * currentState.zoom)
-  }, [settings.pixelsPerSecond])
-  
+    return pixel / (settings.pixelsPerSecond * state.zoom)
+  }, [settings.pixelsPerSecond, state.zoom])
+
   // Convert time to pixel position (accounting for zoom)
   const timeToPixel = useCallback((time: number): number => {
-    const currentState = stateRef.current
-    return time * settings.pixelsPerSecond * currentState.zoom
-  }, [settings.pixelsPerSecond])
-  
+    return time * settings.pixelsPerSecond * state.zoom
+  }, [settings.pixelsPerSecond, state.zoom])
+
   // Snap time to grid if enabled
   const snapToGrid = useCallback((time: number): number => {
     if (!settings.snapToGrid)
@@ -159,53 +360,79 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
 
   // Calculate actual trim values based on clip properties and transition usage
   const calculateTrimValues = useCallback((clip: ClipOverlay): { trimIn: number; trimOut: number } => {
-    const currentState = stateRef.current
     const effectiveLength = getEffectiveClipLength(clip)
     const totalUsedTime = clip.duration
-    
+
     // If the clip duration is less than effective length, some content is trimmed
     if (totalUsedTime < effectiveLength) {
       // mediaStartTime represents how much was trimmed from the beginning
       const baseTrimIn = clip.mediaStartTime / clip.speed // Convert to timeline time
       // The rest is trimmed from the end
       const baseTrimOut = effectiveLength - totalUsedTime - baseTrimIn
-      
+
       // Account for transition usage - find transitions for this clip
-      const transitionIn = currentState.overlays.find(o => o.id === clip.transitionInId)
-      const transitionOut = currentState.overlays.find(o => o.id === clip.transitionOutId)
-      
+      const transitionIn = state.overlays.find(o => o.id === clip.transitionInId)
+      const transitionOut = state.overlays.find(o => o.id === clip.transitionOutId)
+
       // Available trim content is reduced by what transitions are using
       const trimInUsedByTransition = transitionIn?.duration || 0
       const trimOutUsedByTransition = transitionOut?.duration || 0
-      
+
       return {
         trimIn: Math.max(0, baseTrimIn - trimInUsedByTransition),
         trimOut: Math.max(0, baseTrimOut - trimOutUsedByTransition)
       }
     }
-    
-    return { trimIn: 0, trimOut: 0 }
-  }, [getEffectiveClipLength])
 
-  // REMOVED: Initialize trim values for all clips on mount
-  // This was causing infinite loops because it would update state on mount
-  // which would cause re-renders. Trim values should be calculated on-demand.
-  
-  // REMOVED: Run initialization when component mounts or overlays change significantly  
-  // This useEffect was causing the infinite loop warning
+    return { trimIn: 0, trimOut: 0 }
+  }, [getEffectiveClipLength, state.overlays])
+
+  // Update clip trim values based on current state
+  const updateClipTrimValues = useCallback((clipId: string) => {
+    const clip = state.overlays.find(o => o.id === clipId && o.type === OverlayType.CLIP) as ClipOverlay | undefined
+    if (!clip) return
+
+    const { trimIn, trimOut } = calculateTrimValues(clip)
+
+    // Only update if values have changed to avoid unnecessary re-renders
+    if (Math.abs(clip.trimmedIn - trimIn) > 0.01 || Math.abs(clip.trimmedOut - trimOut) > 0.01) {
+      actions.updateOverlay(clipId, {
+        trimmedIn: trimIn,
+        trimmedOut: trimOut
+      })
+    }
+  }, [state.overlays, calculateTrimValues, actions])
+
+  // Initialize trim values for all clips on mount
+  const initializeTrimValues = useCallback(() => {
+    state.overlays.forEach(overlay => {
+      if (overlay.type === OverlayType.CLIP) {
+        updateClipTrimValues(overlay.id)
+      }
+    })
+  }, [state.overlays, updateClipTrimValues])
+
+  // Run initialization when component mounts or overlays change significantly
+  useEffect(() => {
+    // Use a timeout to ensure all state is settled
+    const timer = setTimeout(() => {
+      initializeTrimValues()
+    }, 100)
+
+    return () => clearTimeout(timer)
+  }, []) // Only run once on mount
 
   // Validate that total duration doesn't exceed clip's effective length
   const validateClipTotalLength = useCallback((clipOverlay: ClipOverlay, newClipDuration?: number, newTransitionInDuration?: number, newTransitionOutDuration?: number): { isValid: boolean; maxAllowedDuration: number; currentTotal: number } => {
-    const currentState = stateRef.current
     const effectiveLength = getEffectiveClipLength(clipOverlay)
-    
+
     // Get current transition durations
-    const transitionIn = clipOverlay.transitionInId ? currentState.overlays.find(o => o.id === clipOverlay.transitionInId) : null
-    const transitionOut = clipOverlay.transitionOutId ? currentState.overlays.find(o => o.id === clipOverlay.transitionOutId) : null
-    
+    const transitionIn = clipOverlay.transitionInId ? state.overlays.find(o => o.id === clipOverlay.transitionInId) : null
+    const transitionOut = clipOverlay.transitionOutId ? state.overlays.find(o => o.id === clipOverlay.transitionOutId) : null
+
     // Check for merged transitions
-    const mergedTransition = currentState.overlays.find(o => 
-      o.type === OverlayType.TRANSITION_MERGED && 
+    const mergedTransition = state.overlays.find(o =>
+      o.type === OverlayType.TRANSITION_MERGED &&
       ((o as MergedTransitionOverlay).fromClipId === clipOverlay.id || (o as MergedTransitionOverlay).toClipId === clipOverlay.id)
     ) as MergedTransitionOverlay | undefined
 
@@ -215,29 +442,28 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     const mergedTransitionDuration = mergedTransition?.duration || 0
 
     // For clips with merged transitions, include the merged transition duration
-    const totalDuration = mergedTransition 
+    const totalDuration = mergedTransition
       ? transitionInDuration + clipDuration + mergedTransitionDuration + transitionOutDuration
       : transitionInDuration + clipDuration + transitionOutDuration
 
     const maxAllowedDuration = effectiveLength
-    
+
     return {
       isValid: totalDuration <= maxAllowedDuration,
       maxAllowedDuration,
       currentTotal: totalDuration
     }
-  }, [getEffectiveClipLength])
+  }, [state.overlays, getEffectiveClipLength])
 
   // Calculate maximum allowed duration for extending in a specific direction
   const getMaxAllowedDurationForExtension = useCallback((overlay: Overlay, direction: 'start' | 'end'): number => {
-    const currentState = stateRef.current
     let clipOverlay: ClipOverlay | undefined
 
     if (overlay.type === OverlayType.CLIP) {
       clipOverlay = overlay as ClipOverlay
     } else if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
       const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
-      clipOverlay = currentState.overlays.find(o => o.id === parentClipId) as ClipOverlay | undefined
+      clipOverlay = state.overlays.find(o => o.id === parentClipId) as ClipOverlay | undefined
     }
 
     if (!clipOverlay) return overlay.duration
@@ -278,28 +504,27 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     }
 
     return overlay.duration
-  }, [getEffectiveClipLength, calculateTrimValues])
+  }, [state.overlays, getEffectiveClipLength, calculateTrimValues])
 
   // Calculate maximum allowed duration for a specific component (legacy function for compatibility)
   const getMaxAllowedDuration = useCallback((overlay: Overlay, componentType: 'clip' | 'transition-in' | 'transition-out'): number => {
-    const currentState = stateRef.current
     let clipOverlay: ClipOverlay | undefined
 
     if (overlay.type === OverlayType.CLIP) {
       clipOverlay = overlay as ClipOverlay
     } else if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
       const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
-      clipOverlay = currentState.overlays.find(o => o.id === parentClipId) as ClipOverlay | undefined
+      clipOverlay = state.overlays.find(o => o.id === parentClipId) as ClipOverlay | undefined
     }
 
     if (!clipOverlay) return overlay.duration
 
     const effectiveLength = getEffectiveClipLength(clipOverlay)
-    const transitionIn = clipOverlay.transitionInId ? currentState.overlays.find(o => o.id === clipOverlay.transitionInId) : null
-    const transitionOut = clipOverlay.transitionOutId ? currentState.overlays.find(o => o.id === clipOverlay.transitionOutId) : null
-    
-    const mergedTransition = currentState.overlays.find(o => 
-      o.type === OverlayType.TRANSITION_MERGED && 
+    const transitionIn = clipOverlay.transitionInId ? state.overlays.find(o => o.id === clipOverlay.transitionInId) : null
+    const transitionOut = clipOverlay.transitionOutId ? state.overlays.find(o => o.id === clipOverlay.transitionOutId) : null
+
+    const mergedTransition = state.overlays.find(o =>
+      o.type === OverlayType.TRANSITION_MERGED &&
       ((o as MergedTransitionOverlay).fromClipId === clipOverlay.id || (o as MergedTransitionOverlay).toClipId === clipOverlay.id)
     ) as MergedTransitionOverlay | undefined
 
@@ -319,77 +544,147 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       default:
         return overlay.duration
     }
-  }, [getEffectiveClipLength])
-  
+  }, [state.overlays, getEffectiveClipLength])
+
   // Check for collisions with other overlays (only for transitions - clips can overlap)
   const checkCollision = useCallback((overlay: Overlay, newStartTime: number, newDuration?: number): boolean => {
-    const currentState = stateRef.current
     // Allow clips to overlap during drag - only check collisions for transitions
     if (overlay.type === OverlayType.CLIP)
        return false
-    
+
     const duration = newDuration ?? overlay.duration
     const endTime = newStartTime + duration
     const relatedOverlays = getRelatedOverlays(overlay)
     const relatedIds = new Set(relatedOverlays.map(o => o.id))
-    
-    return currentState.overlays.some(other => {
+
+    return state.overlays.some(other => {
       if (relatedIds.has(other.id) || other.row !== overlay.row)
         return false
-      
+
       const otherEndTime = other.startTime + other.duration
       return !(endTime <= other.startTime || newStartTime >= otherEndTime)
     })
-  }, [getRelatedOverlays])
-  
+  }, [state.overlays, getRelatedOverlays])
+
   // Find the nearest valid position without collision
   const findValidPosition = useCallback((overlay: Overlay, targetTime: number): number => {
-    const currentSettings = settings  // Capture current settings
     let testTime = targetTime
-    const step = currentSettings.gridSize
+    const step = settings.gridSize
     const maxAttempts = 100
-    
+
     // Try the target position first
     if (!checkCollision(overlay, testTime))
       return snapToGrid(testTime)
-    
+
     // Try positions to the right and left alternately
     for (let i = 1; i <= maxAttempts; i++) {
       const rightTime = targetTime + (step * i)
       const leftTime = targetTime - (step * i)
-      
+
       if (rightTime >= 0 && !checkCollision(overlay, rightTime))
         return snapToGrid(rightTime)
-      
+
       if (leftTime >= 0 && !checkCollision(overlay, leftTime))
         return snapToGrid(leftTime)
     }
-    
+
     // If no valid position found, return original position
     return overlay.startTime
-  }, [checkCollision, snapToGrid, settings])
+  }, [checkCollision, snapToGrid, settings.gridSize])
 
-  // REMOVED: snapOverlappingClip function caused infinite loops
-  // Snapping logic now simplified to prevent state dependency issues
-  
+  // Snap overlapping clips to nearest neighbor edge, accounting for transition merge space
+  const snapOverlappingClip = useCallback((overlay: Overlay, currentState: typeof state): number => {
+    if (overlay.type !== OverlayType.CLIP)
+      return overlay.startTime
+
+    const overlayEnd = overlay.startTime + overlay.duration
+    const relatedOverlays = getRelatedOverlays(overlay)
+    const relatedIds = new Set(relatedOverlays.map(o => o.id))
+
+    console.log('Checking overlaps for clip:', overlay.id, 'position:', overlay.startTime, 'to', overlayEnd, 'on row:', overlay.row)
+    console.log('Related IDs to exclude:', Array.from(relatedIds))
+
+    // Find overlapping clips on the same row (excluding related overlays)
+    const overlappingClips = currentState.overlays.filter(other => {
+      if (relatedIds.has(other.id) || other.row !== overlay.row || other.type !== OverlayType.CLIP)
+        return false
+
+      const otherEnd = other.startTime + other.duration
+      const hasOverlap = !(overlayEnd <= other.startTime || overlay.startTime >= otherEnd)
+
+      console.log('Checking against clip:', other.id, 'position:', other.startTime, 'to', otherEnd, 'overlap:', hasOverlap)
+
+      return hasOverlap
+    })
+
+    console.log('Found overlapping clips:', overlappingClips.length, overlappingClips.map(c => c.id))
+
+    if (overlappingClips.length === 0)
+      return overlay.startTime
+
+    // Find the closest snap position for each overlapping clip
+    let bestSnapTime = overlay.startTime
+    let minDistance = Infinity
+
+    overlappingClips.forEach(other => {
+      const otherEnd = other.startTime + other.duration
+
+      // Check if these clips would create a merged transition
+      const overlayTransitionOut = currentState.overlays.find(o => o.id === (overlay as any).transitionOutId)
+      const otherTransitionIn = currentState.overlays.find(o => o.id === (other as any).transitionInId)
+
+      // Calculate space needed for merged transition if one would be created
+      let mergedTransitionSpace = 0
+      if (overlayTransitionOut && otherTransitionIn) {
+        mergedTransitionSpace = overlayTransitionOut.duration + otherTransitionIn.duration
+        console.log('Calculated merged transition space needed:', mergedTransitionSpace, 'for clips', overlay.id, 'and', other.id)
+      }
+
+      // Option 1: Snap to left of other clip (account for merged transition space)
+      const snapLeft = other.startTime - overlay.duration - mergedTransitionSpace
+      const distanceLeft = Math.abs(snapLeft - overlay.startTime)
+
+      // Option 2: Snap to right of other clip
+      const snapRight = otherEnd
+      const distanceRight = Math.abs(snapRight - overlay.startTime)
+
+      console.log('Snap options for', other.id, '- Left:', snapLeft, '(distance:', distanceLeft, ') Right:', snapRight, '(distance:', distanceRight, ')')
+
+      // Choose the closest option
+      if (snapLeft >= 0 && distanceLeft < minDistance) {
+        minDistance = distanceLeft
+        bestSnapTime = snapLeft
+        console.log('Best snap updated to left position:', snapLeft, 'with merged space:', mergedTransitionSpace)
+      }
+
+      if (distanceRight < minDistance) {
+        minDistance = distanceRight
+        bestSnapTime = snapRight
+        console.log('Best snap updated to right position:', snapRight)
+      }
+    })
+
+    return snapToGrid(bestSnapTime)
+  }, [getRelatedOverlays, snapToGrid])
+
   const handleMouseDown = useCallback((event: React.MouseEvent, overlay: Overlay) => {
     event.preventDefault()
     event.stopPropagation()
-    
+
     // Get the clip element (not the resize handle)
     const clipElement = document.getElementById(`overlay-${overlay.id}`)
     if (!clipElement)
       return
-    
+
     const clipRect = clipElement.getBoundingClientRect()
     const clickX = event.clientX - clipRect.left
     const overlayWidth = clipRect.width
-    
+
     // Determine drag type based on click position relative to the full clip
     let dragType: 'move' | 'resize-left' | 'resize-right' = 'move'
     const resizeHandleWidth = 12
     const transitionInteractiveWidth = 12
-    
+
     // Transition resize logic: transition-in only LEFT, transition-out only RIGHT
     if (overlay.type === OverlayType.TRANSITION_IN) {
       // Only left resize handle for transition-in (slightly larger interactive zone)
@@ -416,21 +711,21 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         dragType = 'resize-right'
       }
     }
-    
-    console.log('Drag detection:', { 
-      clickX, 
-      overlayWidth, 
-      resizeHandleWidth, 
+
+    console.log('Drag detection:', {
+      clickX,
+      overlayWidth,
+      resizeHandleWidth,
       dragType,
       rightThreshold: overlayWidth - resizeHandleWidth,
       targetElement: event.currentTarget.className
     })
-    
+
     // Select the overlay if not already selected
     if (!overlay.selected) {
       actions.selectOverlay(overlay.id, event.ctrlKey || event.metaKey)
     }
-    
+
     const currentDragInfo: DragInfo = {
       overlayId: overlay.id,
       startX: event.clientX,
@@ -439,78 +734,94 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       originalDuration: overlay.duration,
       dragType
     }
-    
-    // Store original positions of all related overlays for consistent movement
-    const relatedOverlays = getRelatedOverlays(overlay)
-    const originalPositions = new Map(relatedOverlays.map(o => [o.id, o.startTime]))
-    
-    console.log('Drag start - storing original positions:', {
-      draggedOverlay: overlay.id,
-      relatedOverlays: relatedOverlays.map(o => ({ id: o.id, type: o.type, startTime: o.startTime })),
-      originalPositions: Array.from(originalPositions.entries())
-    })
-    
+
     const startPosition = { x: event.clientX, y: event.clientY }
     actions.startDrag(currentDragInfo)
     options.onDragStart?.(overlay)
-    
+
     // Add global mouse event listeners
     let localIsDragging = false
-    
+
     const handleMouseMove = (e: MouseEvent) => {
       const deltaX = e.clientX - startPosition.x
       const deltaY = e.clientY - startPosition.y
       const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
-      
+
       if (!localIsDragging && distance > dragThreshold) {
         localIsDragging = true
         setIsDragging(true)
       }
-      
+
       if (localIsDragging) {
         const deltaPixels = e.clientX - currentDragInfo.startX
         const deltaTime = pixelToTime(deltaPixels)
-        
+
         if (currentDragInfo.dragType === 'move') {
-          // Calculate the target position for the dragged overlay
-          const targetTime = Math.max(0, currentDragInfo.originalStartTime + deltaTime)
-          const deltaFromOriginal = targetTime - currentDragInfo.originalStartTime
-          
-          // Move all related overlays by the same delta from their original positions
-          // Use the stored relatedOverlays from drag start, not a new call to getRelatedOverlays
-          
-          console.log('Move operation debug:', {
-            draggedOverlay: overlay.id,
-            draggedType: overlay.type,
-            relatedOverlays: relatedOverlays.map(o => ({ id: o.id, type: o.type, startTime: o.startTime })),
-            deltaFromOriginal,
-            originalPositions: Array.from(originalPositions.entries())
-          })
-          
+          // Determine anchor for group move: clip itself, or parent clip for transitions, or fromClip for merged
+          const anchorOverlay = (() => {
+            if (overlay.type === OverlayType.CLIP)
+              return overlay
+            if (overlay.type === OverlayType.TRANSITION_IN || overlay.type === OverlayType.TRANSITION_OUT) {
+              const parentClipId = (overlay as TransitionInOverlay | TransitionOutOverlay).parentClipId
+              return state.overlays.find(o => o.id === parentClipId) || overlay
+            }
+            if (overlay.type === OverlayType.TRANSITION_MERGED) {
+              const fromClipId = (overlay as MergedTransitionOverlay).fromClipId
+              return state.overlays.find(o => o.id === fromClipId) || overlay
+            }
+            return overlay
+          })()
+
+          // Use the current anchor position to compute a valid incremental delta
+          const anchorCurrent = state.overlays.find(o => o.id === anchorOverlay.id) || anchorOverlay
+          const anchorTarget = Math.max(0, anchorCurrent.startTime + deltaTime)
+
+          // Add timeline boundary constraints - prevent dragging beyond timeline duration
+          const maxAllowedStart = Math.max(0, state.duration - anchorCurrent.duration)
+          const boundaryConstrainedTarget = Math.min(anchorTarget, maxAllowedStart)
+
+          // For clips, allow overlaps during drag - for transitions, use collision detection
+          const validAnchorStart = anchorCurrent.type === OverlayType.CLIP
+            ? snapToGrid(boundaryConstrainedTarget)
+            : findValidPosition(anchorCurrent, boundaryConstrainedTarget)
+          const deltaSinceLast = snapToGrid(validAnchorStart - anchorCurrent.startTime)
+
+          // Move all related overlays by the same incremental delta to avoid stale state reads
+          const relatedOverlays = getRelatedOverlays(overlay)
           relatedOverlays.forEach(relatedOverlay => {
-            const originalStart = originalPositions.get(relatedOverlay.id) || relatedOverlay.startTime
-            const newStart = snapToGrid(originalStart + deltaFromOriginal)
-            
-            console.log(`Moving ${relatedOverlay.id} from ${originalStart} to ${newStart}`)
-            
-            actions.updateOverlayBatch(relatedOverlay.id, { 
-              startTime: Math.max(0, newStart) 
-            })
+            const newStart = snapToGrid(relatedOverlay.startTime + deltaSinceLast)
+            // Keep transition-in glued to the start of its clip; transition-out to the end of its clip
+            if (relatedOverlay.type === OverlayType.TRANSITION_IN) {
+              const parent = state.overlays.find(o => o.id === (relatedOverlay as TransitionInOverlay).parentClipId)
+              if (parent) {
+                const tInStart = snapToGrid(parent.startTime - relatedOverlay.duration + deltaSinceLast)
+                actions.updateOverlayBatch(relatedOverlay.id, { startTime: tInStart, row: parent.row })
+                return
+              }
+            }
+            if (relatedOverlay.type === OverlayType.TRANSITION_OUT) {
+              const parent = state.overlays.find(o => o.id === (relatedOverlay as TransitionOutOverlay).parentClipId)
+              if (parent) {
+                const tOutStart = snapToGrid(parent.startTime + parent.duration + deltaSinceLast)
+                actions.updateOverlayBatch(relatedOverlay.id, { startTime: tOutStart, row: parent.row })
+                return
+              }
+            }
+            actions.updateOverlayBatch(relatedOverlay.id, { startTime: newStart })
           })
 
-          // During move operations, all related overlays move together using their original positions
-          // No additional positioning logic needed - this ensures 1:1 mouse movement
+          // No additional realignment here; keep merged transition relative to its stored start/duration
         } else if (currentDragInfo.dragType === 'resize-left') {
           // Handle transition resize differently - only transition-in can resize from left
           if (overlay.type === OverlayType.TRANSITION_IN) {
-            const requestedDuration = Math.max(getMinDuration(), currentDragInfo.originalDuration - deltaTime)
+            const requestedDuration = Math.max(0, currentDragInfo.originalDuration - deltaTime)
             // For transition-in left resize, we're potentially extending from the start
             const isExtending = requestedDuration > currentDragInfo.originalDuration
-            const maxAllowed = isExtending 
+            const maxAllowed = isExtending
               ? getMaxAllowedDurationForExtension(overlay, 'start')
               : getMaxAllowedDuration(overlay, 'transition-in')
             const newDuration = Math.min(requestedDuration, maxAllowed)
-            
+
             console.log('Transition-in resize debug:', {
               originalDuration: currentDragInfo.originalDuration,
               deltaTime,
@@ -520,34 +831,33 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               newDuration,
               snappedDuration: snapToGrid(newDuration)
             })
-            
-            const parentClip = stateRef.current.overlays.find(o => o.id === (overlay as TransitionInOverlay).parentClipId) as ClipOverlay | undefined
+
+            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionInOverlay).parentClipId) as ClipOverlay | undefined
             if (parentClip) {
-              const newTransitionStart = parentClip.startTime - newDuration
-              const finalTransitionDuration = Math.max(getMinDuration(), snapToGrid(newDuration))
-              
+              const newTransitionStart = parentClip.startTime - snapToGrid(newDuration)
+              const newTransitionDuration = snapToGrid(newDuration)
+
               // Create temporary clip state with updated transition duration for trim calculation
               const tempClip = {
                 ...parentClip,
                 transitionInId: overlay.id // Ensure it references this transition
               }
-              
+
               // Calculate trim values considering the new transition duration
               const effectiveLength = getEffectiveClipLength(tempClip)
               const baseTrimIn = tempClip.mediaStartTime / tempClip.speed
               const baseTrimOut = effectiveLength - tempClip.duration - baseTrimIn
-              const trimIn = Math.max(0, baseTrimIn - finalTransitionDuration)
-              const trimOut = Math.max(0, baseTrimOut - (stateRef.current.overlays.find(o => o.id === tempClip.transitionOutId)?.duration || 0))
-              
+              const trimIn = Math.max(0, baseTrimIn - newTransitionDuration)
+              const trimOut = Math.max(0, baseTrimOut - (state.overlays.find(o => o.id === tempClip.transitionOutId)?.duration || 0))
+
               // Update both transition and parent clip
-              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: finalTransitionDuration, row: parentClip.row })
+              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: newTransitionDuration, row: parentClip.row })
               actions.updateOverlayBatch(parentClip.id, {
                 trimmedIn: trimIn,
                 trimmedOut: trimOut
               })
             } else {
-              const finalDuration = Math.max(getMinDuration(), snapToGrid(newDuration))
-              actions.updateOverlayBatch(overlay.id, { duration: finalDuration })
+              actions.updateOverlayBatch(overlay.id, { duration: snapToGrid(newDuration) })
             }
             return
           } else if (overlay.type === OverlayType.TRANSITION_OUT) {
@@ -556,47 +866,26 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           } else if (overlay.type === OverlayType.TRANSITION_MERGED) {
             // Merged transition left resize - resize the fromClip (like resizing clip end)
             const mergedTransition = overlay as MergedTransitionOverlay
-            const fromClip = stateRef.current.overlays.find(o => o.id === mergedTransition.fromClipId) as ClipOverlay | undefined
-            const toClip = stateRef.current.overlays.find(o => o.id === mergedTransition.toClipId)
-            
+            const fromClip = state.overlays.find(o => o.id === mergedTransition.fromClipId) as ClipOverlay | undefined
+            const toClip = state.overlays.find(o => o.id === mergedTransition.toClipId)
+
             if (fromClip && toClip && fromClip.type === OverlayType.CLIP) {
               // Calculate new fromClip duration based on merged transition left resize
               // When dragging left handle right (positive deltaTime), we want to extend fromClip
               const mergedTransitionDelta = deltaTime // How much the transition start is moving
-              const newFromClipDuration = Math.max(getMinDuration(), fromClip.duration + mergedTransitionDelta)
-              
-              // IMPORTANT: Add merged transition constraint - prevent extending beyond toClip start - 1 frame
-              // The merged transition should stop at least 1 frame before the toClip starts
-              const toClipStart = toClip.startTime
-              const maxMergedEnd = toClipStart - getMinDuration() // Stop 1 frame before toClip
-              const maxFromClipEnd = Math.max(fromClip.startTime + getMinDuration(), maxMergedEnd - getMinDuration()) // Account for minimum merged transition duration
-              const maxFromClipDuration = maxFromClipEnd - fromClip.startTime
-              
-              // Apply clip length constraints
+              const newFromClipDuration = Math.max(0.1, fromClip.duration + mergedTransitionDelta)
+
+              // Apply same constraints as regular clip right resize
               const isExtending = newFromClipDuration > fromClip.duration
-              const maxAllowed = isExtending 
+              const maxAllowed = isExtending
                 ? getMaxAllowedDurationForExtension(fromClip, 'end')
                 : getMaxAllowedDuration(fromClip, 'clip')
-              let constrainedDuration = Math.min(newFromClipDuration, maxAllowed)
-              
-              // Apply the merged transition constraint (most restrictive)
-              constrainedDuration = Math.min(constrainedDuration, maxFromClipDuration)
-              
+              const constrainedDuration = Math.min(newFromClipDuration, maxAllowed)
+
               // Add timeline boundary constraints
               const maxAllowedEnd = state.duration
-              const boundaryConstrainedDuration = Math.max(getMinDuration(), Math.min(constrainedDuration, maxAllowedEnd - fromClip.startTime))
-              
-              console.log('Merged transition left resize constraint:', {
-                mergedTransitionDelta,
-                newFromClipDuration,
-                toClipStart,
-                maxMergedEnd,
-                maxFromClipEnd,
-                maxFromClipDuration,
-                constrainedDuration,
-                finalDuration: boundaryConstrainedDuration
-              })
-              
+              const boundaryConstrainedDuration = Math.max(0.1, Math.min(constrainedDuration, maxAllowedEnd - fromClip.startTime))
+
               if (!checkCollision(fromClip, fromClip.startTime, boundaryConstrainedDuration)) {
                 // Calculate new trim values for the fromClip
                 const tempClip = {
@@ -606,30 +895,29 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 const { trimIn, trimOut } = calculateTrimValues(tempClip)
 
                 // Update fromClip duration
-                actions.updateOverlayBatch(fromClip.id, { 
+                actions.updateOverlayBatch(fromClip.id, {
                   duration: snapToGrid(boundaryConstrainedDuration),
                   trimmedIn: trimIn,
                   trimmedOut: trimOut
                 })
-                
+
                 // Update merged transition start to stay glued to fromClip end
                 // and adjust duration so the end stays in the same place
                 const newMergedStart = fromClip.startTime + snapToGrid(boundaryConstrainedDuration)
                 const originalMergedEnd = overlay.startTime + overlay.duration
-                const newMergedDuration = Math.max(getMinDuration(), originalMergedEnd - newMergedStart)
-                const finalMergedDuration = Math.max(getMinDuration(), snapToGrid(newMergedDuration))
-                
-                actions.updateOverlayBatch(overlay.id, { 
+                const newMergedDuration = Math.max(0.1, originalMergedEnd - newMergedStart)
+
+                actions.updateOverlayBatch(overlay.id, {
                   startTime: newMergedStart,
-                  duration: finalMergedDuration
+                  duration: snapToGrid(newMergedDuration)
                 })
-                
+
                 // toClip (clip-2) doesn't move when resizing merged transition start
                 // It stays in its original position
-                
+
                 // Update fromClip's transition-out if it exists
                 if (fromClip.transitionOutId && fromClip.transitionOutId !== overlay.id) {
-                  const transitionOut = stateRef.current.overlays.find(o => o.id === fromClip.transitionOutId)
+                  const transitionOut = state.overlays.find(o => o.id === fromClip.transitionOutId)
                   if (transitionOut) {
                     const newTransitionOutStart = fromClip.startTime + snapToGrid(boundaryConstrainedDuration)
                     actions.updateOverlayBatch(fromClip.transitionOutId, { startTime: newTransitionOutStart, row: fromClip.row })
@@ -639,116 +927,36 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
             }
             return
           }
-          
+
           // Regular clip resize logic with length constraints
-          const requestedDuration = Math.max(getMinDuration(), currentDragInfo.originalDuration - deltaTime)
-          const originalEndTime = currentDragInfo.originalStartTime + currentDragInfo.originalDuration
-          
-          // Check clip length constraints first
+          const newStartTime = Math.max(0, currentDragInfo.originalStartTime + deltaTime)
+          const requestedDuration = Math.max(0.1, currentDragInfo.originalDuration - deltaTime)
+
+          // Add timeline boundary constraints for left resize
+          const maxEndTime = Math.min(newStartTime + requestedDuration, state.duration)
+          const boundaryConstrainedDuration = Math.max(0.1, maxEndTime - newStartTime)
+
+          // Check clip length constraints
           if (overlay.type === OverlayType.CLIP) {
             const clipOverlay = overlay as ClipOverlay
             // For left resize, we're potentially extending from the start
-            const isExtending = requestedDuration > currentDragInfo.originalDuration
-            const maxAllowed = isExtending 
+            const isExtending = newStartTime < currentDragInfo.originalStartTime
+            const maxAllowed = isExtending
               ? getMaxAllowedDurationForExtension(overlay, 'start')
               : getMaxAllowedDuration(overlay, 'clip')
-            let constrainedDuration = Math.min(requestedDuration, maxAllowed)
-            
-            // Calculate start time to maintain the original end position
-            let constrainedStartTime = originalEndTime - constrainedDuration
-            
-            // Ensure start time doesn't go negative
-            if (constrainedStartTime < 0) {
-              constrainedStartTime = 0
-              constrainedDuration = Math.min(originalEndTime, maxAllowed)
-            }
-            
-            // Add timeline boundary constraints
-            const maxEndTime = Math.min(constrainedStartTime + constrainedDuration, state.duration)
-            constrainedDuration = Math.max(getMinDuration(), maxEndTime - constrainedStartTime)
-            
-            // IMPORTANT: Prevent clip from becoming unreachable behind transitions
-            // When a clip has transitions, we need to ensure it remains clickable
-            let minAccessibleDuration = getMinDuration()
-            
-            if (overlay.transitionOutId) {
-              const transitionOut = stateRef.current.overlays.find(o => o.id === overlay.transitionOutId)
-              if (transitionOut && transitionOut.duration > 0) {
-                // The issue: when clip becomes very small (1 frame), the transition-out
-                // may visually cover or make it hard to click the clip
-                // Solution: ensure clip is always larger than 1 frame when it has transitions
-                // This gives enough visual space for reliable interaction
-                const bufferFrames = 2 // Ensure at least 2 frames for reliable clicking
-                minAccessibleDuration = getMinDuration() * bufferFrames
-                
-                console.log('Left resize: preventing clip from becoming unreachable', {
-                  transitionOutDuration: transitionOut.duration,
-                  singleFrameDuration: getMinDuration(),
-                  bufferFrames,
-                  minAccessibleDuration
-                })
-              }
-            }
-            
-            if (constrainedDuration < minAccessibleDuration) {
-              // Adjust duration to ensure clip remains accessible
-              constrainedDuration = minAccessibleDuration
-              constrainedStartTime = Math.max(0, originalEndTime - constrainedDuration)
-              
-              console.log('Left resize: constraining duration for accessibility', {
-                originalConstrainedDuration: constrainedDuration,
-                minAccessibleDuration,
-                adjustedStartTime: constrainedStartTime,
-                adjustedDuration: constrainedDuration
-              })
-            }
-            
-            // Check for merged transition constraints when this clip is the toClip
-            const mergedAsTo = state.overlays.find(o => 
-              o.type === OverlayType.TRANSITION_MERGED && 
-              (o as MergedTransitionOverlay).toClipId === overlay.id
-            ) as MergedTransitionOverlay | undefined
-            
-            if (mergedAsTo) {
-              // This clip is the toClip - ensure merged transition doesn't go below minimum duration
-              const fromClip = state.overlays.find(o => o.id === mergedAsTo.fromClipId)
-              if (fromClip) {
-                const mergedStart = fromClip.startTime + fromClip.duration
-                const minMergedEnd = mergedStart + getMinDuration() // Minimum end position for merged transition
-                
-                // Constrain the new start time to respect merged transition minimum
-                const adjustedStartTime = Math.max(constrainedStartTime, minMergedEnd)
-                
-                // Recalculate duration based on constrained start time
-                constrainedDuration = Math.max(getMinDuration(), originalEndTime - adjustedStartTime)
-                constrainedStartTime = adjustedStartTime
-                
-                console.log('Left resize merged transition constraint:', {
-                  mergedTransitionId: mergedAsTo.id,
-                  fromClipEnd: fromClip.startTime + fromClip.duration,
-                  minMergedEnd,
-                  originalConstrainedStartTime: constrainedStartTime,
-                  adjustedStartTime,
-                  constrainedDuration
-                })
-              }
-            }
-            
-            const newDuration = constrainedDuration
-            const finalStartTime = constrainedStartTime
-            
+            const newDuration = Math.min(boundaryConstrainedDuration, maxAllowed)
+
             // When left-resizing, we're effectively trimming more from the beginning
             // Calculate new mediaStartTime (in source time)
-            const timeShift = finalStartTime - currentDragInfo.originalStartTime
+            const timeShift = newStartTime - currentDragInfo.originalStartTime
             const newMediaStartTime = Math.max(0, clipOverlay.mediaStartTime + (timeShift * clipOverlay.speed))
-            
+
             console.log('Left resize with constraints:', {
               deltaPixels: e.clientX - currentDragInfo.startX,
               deltaTime,
               originalStartTime: currentDragInfo.originalStartTime,
               originalDuration: currentDragInfo.originalDuration,
-              originalEndTime,
-              finalStartTime,
+              newStartTime,
               requestedDuration,
               maxAllowed,
               finalDuration: newDuration,
@@ -756,18 +964,18 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               oldMediaStartTime: clipOverlay.mediaStartTime,
               newMediaStartTime
             })
-            
-            if (!checkCollision(overlay, finalStartTime, newDuration)) {
-              console.log('Updating left resize:', { 
-                startTime: snapToGrid(finalStartTime), 
+
+            if (!checkCollision(overlay, newStartTime, newDuration)) {
+              console.log('Updating left resize:', {
+                startTime: snapToGrid(newStartTime),
                 duration: snapToGrid(newDuration),
                 mediaStartTime: newMediaStartTime
               })
-              
+
               // Calculate new trim values immediately based on the new clip properties
               const tempClip = {
                 ...clipOverlay,
-                startTime: snapToGrid(finalStartTime),
+                startTime: snapToGrid(newStartTime),
                 duration: snapToGrid(newDuration),
                 mediaStartTime: newMediaStartTime
               }
@@ -775,55 +983,48 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
 
               // Update the main overlay with immediate trim values
               actions.updateOverlayBatch(overlay.id, {
-                startTime: snapToGrid(finalStartTime),
+                startTime: snapToGrid(newStartTime),
                 duration: snapToGrid(newDuration),
                 mediaStartTime: newMediaStartTime,
                 trimmedIn: trimIn,
                 trimmedOut: trimOut
               })
-              
-              // Update associated transitions - these must ALWAYS be positioned relative to the clip
-              const finalClipStart = snapToGrid(finalStartTime)
-              const finalClipDuration = snapToGrid(newDuration)
-              const finalClipEnd = finalClipStart + finalClipDuration
-              
+
+              // Update associated transitions
               if (overlay.transitionInId) {
                 const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
                 if (transitionIn) {
-                  // Transition-in should be positioned to end exactly where the clip starts
-                  const tInStart = finalClipStart - transitionIn.duration
-                  console.log('Left resize: updating transition-in position:', transitionIn.id, 'to start at', tInStart)
+                  const tInStart = snapToGrid(newStartTime) - transitionIn.duration
                   actions.updateOverlayBatch(overlay.transitionInId, { startTime: tInStart, row: overlay.row })
                 }
               }
               if (overlay.transitionOutId) {
                 const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
                 if (transitionOut) {
-                  // Transition-out should be positioned to start exactly where the clip ends
-                  console.log('Left resize: updating transition-out position:', transitionOut.id, 'to start at', finalClipEnd)
-                  actions.updateOverlayBatch(overlay.transitionOutId, { startTime: finalClipEnd, row: overlay.row })
+                  const newTransitionOutStart = snapToGrid(newStartTime) + snapToGrid(newDuration)
+                  actions.updateOverlayBatch(overlay.transitionOutId, { startTime: newTransitionOutStart, row: overlay.row })
                 }
               }
 
                              // Update merged transition if present
                const mergedAsFrom = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).fromClipId === overlay.id) as MergedTransitionOverlay | undefined
                const mergedAsTo = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).toClipId === overlay.id) as MergedTransitionOverlay | undefined
-               
+
                if (mergedAsFrom) {
                  // This clip is the fromClip - update merged transition start to stay glued to clip end
                  // and ensure toClip stays connected at the other end of the merged transition
-                 const mergedStart = snapToGrid(finalStartTime) + snapToGrid(newDuration)
+                 const mergedStart = snapToGrid(newStartTime) + snapToGrid(newDuration)
                  const toClip = state.overlays.find(o => o.id === mergedAsFrom.toClipId)
-                 
+
                  console.log('Left resize: updating merged transition (as fromClip)', mergedAsFrom.id, 'start to', mergedStart)
                  actions.updateOverlayBatch(mergedAsFrom.id, { startTime: mergedStart, row: overlay.row })
-                 
+
                  // Keep toClip attached to the end of the merged transition
                  if (toClip) {
                    const newToClipStart = mergedStart + mergedAsFrom.duration
                    console.log('Left resize: moving toClip', toClip.id, 'to stay attached at', newToClipStart)
                    actions.updateOverlayBatch(toClip.id, { startTime: newToClipStart, row: overlay.row })
-                   
+
                    // Update toClip's transitions to follow
                    if ((toClip as any).transitionInId) {
                      const toTransitionIn = state.overlays.find(o => o.id === (toClip as any).transitionInId)
@@ -841,97 +1042,39 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                    }
                  }
                }
-               
+
                if (mergedAsTo) {
                  // This clip is the toClip - when left-resizing toClip, adjust merged transition duration
                  // fromClip stays in place, merged transition adjusts to connect to new toClip position
                  const fromClip = state.overlays.find(o => o.id === mergedAsTo.fromClipId)
                  if (fromClip) {
                    const mergedStart = fromClip.startTime + fromClip.duration
-                   const mergedEnd = snapToGrid(finalStartTime)
-                   const newMergedDuration = Math.max(getMinDuration(), mergedEnd - mergedStart)
-                   const finalMergedDuration = Math.max(getMinDuration(), snapToGrid(newMergedDuration))
-                   console.log('Left resize: updating merged transition (as toClip)', mergedAsTo.id, 'duration to', finalMergedDuration)
-                   console.log('Left resize: fromClip stays at', fromClip.startTime, 'toClip moves to', snapToGrid(finalStartTime))
-                   actions.updateOverlayBatch(mergedAsTo.id, { 
+                   const mergedEnd = snapToGrid(newStartTime)
+                   const newMergedDuration = Math.max(0.1, mergedEnd - mergedStart)
+                   console.log('Left resize: updating merged transition (as toClip)', mergedAsTo.id, 'duration to', snapToGrid(newMergedDuration))
+                   console.log('Left resize: fromClip stays at', fromClip.startTime, 'toClip moves to', snapToGrid(newStartTime))
+                   actions.updateOverlayBatch(mergedAsTo.id, {
                      startTime: mergedStart,
-                     duration: finalMergedDuration,
-                     row: overlay.row 
+                     duration: snapToGrid(newMergedDuration),
+                     row: overlay.row
                    })
                  }
                }
             } else {
-              console.log('Left resize collision detected - ensuring transitions stay attached to current clip position')
-              
-              // Even if the clip can't move due to collision, we need to ensure transitions
-              // are properly positioned relative to the current clip position
-              const currentClipStart = overlay.startTime
-              const currentClipEnd = overlay.startTime + overlay.duration
-              
-              if (overlay.transitionInId) {
-                const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
-                if (transitionIn) {
-                  const tInStart = currentClipStart - transitionIn.duration
-                  console.log('Collision case: ensuring transition-in is at', tInStart)
-                  actions.updateOverlayBatch(overlay.transitionInId, { startTime: tInStart, row: overlay.row })
-                }
-              }
-              if (overlay.transitionOutId) {
-                const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
-                if (transitionOut) {
-                  console.log('Collision case: ensuring transition-out is at', currentClipEnd)
-                  actions.updateOverlayBatch(overlay.transitionOutId, { startTime: currentClipEnd, row: overlay.row })
-                }
-              }
-            }
-          }
-          
-          // SAFETY CHECK: Ensure transitions are always properly positioned relative to the clip
-          // This handles edge cases where constraints might leave transitions misaligned
-          if (overlay.type === OverlayType.CLIP) {
-            const currentClipPosition = state.overlays.find(o => o.id === overlay.id)
-            if (currentClipPosition) {
-              const clipStart = currentClipPosition.startTime
-              const clipEnd = currentClipPosition.startTime + currentClipPosition.duration
-              
-              // Verify and correct transition-in position
-              if (overlay.transitionInId) {
-                const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
-                if (transitionIn) {
-                  const expectedTInStart = clipStart - transitionIn.duration
-                  const actualTInStart = transitionIn.startTime
-                  if (Math.abs(actualTInStart - expectedTInStart) > 0.01) {
-                    console.log('Safety check: correcting transition-in position from', actualTInStart, 'to', expectedTInStart)
-                    actions.updateOverlayBatch(overlay.transitionInId, { startTime: expectedTInStart, row: overlay.row })
-                  }
-                }
-              }
-              
-              // Verify and correct transition-out position
-              if (overlay.transitionOutId) {
-                const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
-                if (transitionOut) {
-                  const expectedTOutStart = clipEnd
-                  const actualTOutStart = transitionOut.startTime
-                  if (Math.abs(actualTOutStart - expectedTOutStart) > 0.01) {
-                    console.log('Safety check: correcting transition-out position from', actualTOutStart, 'to', expectedTOutStart)
-                    actions.updateOverlayBatch(overlay.transitionOutId, { startTime: expectedTOutStart, row: overlay.row })
-                  }
-                }
-              }
+              console.log('Left resize collision detected')
             }
           }
         } else if (currentDragInfo.dragType === 'resize-right') {
           // Handle transition resize differently - only transition-out can resize from right
           if (overlay.type === OverlayType.TRANSITION_OUT) {
-            const requestedDuration = Math.max(getMinDuration(), currentDragInfo.originalDuration + deltaTime)
+            const requestedDuration = Math.max(0, currentDragInfo.originalDuration + deltaTime)
             // For transition-out right resize, we're potentially extending from the end
             const isExtending = requestedDuration > currentDragInfo.originalDuration
-            const maxAllowed = isExtending 
+            const maxAllowed = isExtending
               ? getMaxAllowedDurationForExtension(overlay, 'end')
               : getMaxAllowedDuration(overlay, 'transition-out')
             const newDuration = Math.min(requestedDuration, maxAllowed)
-            
+
             console.log('Transition-out resize debug:', {
               originalDuration: currentDragInfo.originalDuration,
               deltaTime,
@@ -941,34 +1084,33 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               newDuration,
               snappedDuration: snapToGrid(newDuration)
             })
-            
-            const parentClip = stateRef.current.overlays.find(o => o.id === (overlay as TransitionOutOverlay).parentClipId) as ClipOverlay | undefined
+
+            const parentClip = state.overlays.find(o => o.id === (overlay as TransitionOutOverlay).parentClipId) as ClipOverlay | undefined
             if (parentClip) {
               const newTransitionStart = parentClip.startTime + parentClip.duration
-              const finalTransitionDuration = Math.max(getMinDuration(), snapToGrid(newDuration))
-              
+              const newTransitionDuration = snapToGrid(newDuration)
+
               // Create temporary clip state with updated transition duration for trim calculation
               const tempClip = {
                 ...parentClip,
                 transitionOutId: overlay.id // Ensure it references this transition
               }
-              
+
               // Calculate trim values considering the new transition duration
               const effectiveLength = getEffectiveClipLength(tempClip)
               const baseTrimIn = tempClip.mediaStartTime / tempClip.speed
               const baseTrimOut = effectiveLength - tempClip.duration - baseTrimIn
-              const trimIn = Math.max(0, baseTrimIn - (stateRef.current.overlays.find(o => o.id === tempClip.transitionInId)?.duration || 0))
-              const trimOut = Math.max(0, baseTrimOut - finalTransitionDuration)
-              
+              const trimIn = Math.max(0, baseTrimIn - (state.overlays.find(o => o.id === tempClip.transitionInId)?.duration || 0))
+              const trimOut = Math.max(0, baseTrimOut - newTransitionDuration)
+
               // Update both transition and parent clip
-              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: finalTransitionDuration, row: parentClip.row })
+              actions.updateOverlayBatch(overlay.id, { startTime: newTransitionStart, duration: newTransitionDuration, row: parentClip.row })
               actions.updateOverlayBatch(parentClip.id, {
                 trimmedIn: trimIn,
                 trimmedOut: trimOut
               })
             } else {
-              const finalDuration = Math.max(getMinDuration(), snapToGrid(newDuration))
-              actions.updateOverlayBatch(overlay.id, { duration: finalDuration })
+              actions.updateOverlayBatch(overlay.id, { duration: snapToGrid(newDuration) })
             }
             return
           } else if (overlay.type === OverlayType.TRANSITION_IN) {
@@ -979,53 +1121,29 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
             const mergedTransition = overlay as MergedTransitionOverlay
             const fromClip = state.overlays.find(o => o.id === mergedTransition.fromClipId)
             const toClip = state.overlays.find(o => o.id === mergedTransition.toClipId) as ClipOverlay | undefined
-            
+
             if (fromClip && toClip && toClip.type === OverlayType.CLIP) {
               // Calculate new toClip start position based on merged transition right resize
               const mergedTransitionDelta = deltaTime // How much the transition end is moving
-              
-              // Constrain the delta to ensure toClip doesn't go below minimum duration
-              const toClipOriginalEnd = toClip.startTime + toClip.duration
-              const maxAllowedDelta = toClip.duration - getMinDuration() // Maximum we can shrink toClip
-              
-              // Also constrain by timeline duration - merged transition can't extend beyond timeline
-              const mergedCurrentEnd = overlay.startTime + overlay.duration
-              const timelineConstrainedDelta = Math.min(mergedTransitionDelta, state.duration - mergedCurrentEnd)
-              
-              // Use the most restrictive constraint (also ensure it's not negative)
-              const constrainedDelta = Math.max(0, Math.min(maxAllowedDelta, timelineConstrainedDelta))
-              
-              const newToClipStart = Math.max(0, toClip.startTime + constrainedDelta)
-              const newToClipDuration = Math.max(getMinDuration(), toClipOriginalEnd - newToClipStart)
-              
-              console.log('Merged transition right resize constraint:', {
-                originalDelta: mergedTransitionDelta,
-                maxAllowedDelta,
-                timelineConstrainedDelta,
-                constrainedDelta,
-                toClipOriginalDuration: toClip.duration,
-                newToClipDuration,
-                minDuration: getMinDuration(),
-                timelineDuration: state.duration,
-                mergedCurrentEnd: overlay.startTime + overlay.duration
-              })
-              
+              const newToClipStart = Math.max(0, toClip.startTime + mergedTransitionDelta)
+              const newToClipDuration = Math.max(0.1, toClip.duration - mergedTransitionDelta)
+
               // Apply same constraints as regular clip left resize
               const isExtending = newToClipStart < toClip.startTime
-              const maxAllowed = isExtending 
+              const maxAllowed = isExtending
                 ? getMaxAllowedDurationForExtension(toClip, 'start')
                 : getMaxAllowedDuration(toClip, 'clip')
-              const finalDuration = Math.min(newToClipDuration, maxAllowed)
-              
+              const constrainedDuration = Math.min(newToClipDuration, maxAllowed)
+
               // Add timeline boundary constraints
-              const maxEndTime = Math.min(newToClipStart + finalDuration, state.duration)
-              const boundaryConstrainedDuration = Math.max(getMinDuration(), maxEndTime - newToClipStart)
-              
+              const maxEndTime = Math.min(newToClipStart + constrainedDuration, state.duration)
+              const boundaryConstrainedDuration = Math.max(0.1, maxEndTime - newToClipStart)
+
               if (!checkCollision(toClip, newToClipStart, boundaryConstrainedDuration)) {
                 // When left-resizing toClip, calculate new mediaStartTime (in source time)
                 const timeShift = newToClipStart - toClip.startTime
                 const newMediaStartTime = Math.max(0, toClip.mediaStartTime + (timeShift * toClip.speed))
-                
+
                 // Calculate new trim values for the toClip
                 const tempClip = {
                   ...toClip,
@@ -1036,21 +1154,20 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 const { trimIn, trimOut } = calculateTrimValues(tempClip)
 
                 // Update toClip position and duration
-                actions.updateOverlayBatch(toClip.id, { 
+                actions.updateOverlayBatch(toClip.id, {
                   startTime: snapToGrid(newToClipStart),
                   duration: snapToGrid(boundaryConstrainedDuration),
                   mediaStartTime: newMediaStartTime,
                   trimmedIn: trimIn,
                   trimmedOut: trimOut
                 })
-                
+
                 // Update merged transition end to stay glued to toClip start
                 const newMergedDuration = snapToGrid(newToClipStart) - overlay.startTime
-                const finalMergedDuration = Math.max(getMinDuration(), newMergedDuration)
-                actions.updateOverlayBatch(overlay.id, { 
-                  duration: finalMergedDuration
+                actions.updateOverlayBatch(overlay.id, {
+                  duration: Math.max(0.1, newMergedDuration)
                 })
-                
+
                 // Update toClip's transition-in if it exists
                 if (toClip.transitionInId && toClip.transitionInId !== overlay.id) {
                   const transitionIn = state.overlays.find(o => o.id === toClip.transitionInId)
@@ -1059,7 +1176,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                     actions.updateOverlayBatch(toClip.transitionInId, { startTime: newTransitionInStart, row: toClip.row })
                   }
                 }
-                
+
                 // Update toClip's transition-out if it exists
                 if (toClip.transitionOutId) {
                   const transitionOut = state.overlays.find(o => o.id === toClip.transitionOutId)
@@ -1072,57 +1189,23 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
             }
             return
           }
-          
+
           // Regular clip resize logic with length constraints
-          const requestedDuration = Math.max(getMinDuration(), currentDragInfo.originalDuration + deltaTime)
-          
+          const requestedDuration = Math.max(0.1, currentDragInfo.originalDuration + deltaTime)
+
           // Add timeline boundary constraints for right resize
           const maxAllowedEnd = state.duration
-          const boundaryConstrainedDuration = Math.max(getMinDuration(), Math.min(requestedDuration, maxAllowedEnd - currentDragInfo.originalStartTime))
-          
+          const boundaryConstrainedDuration = Math.max(0.1, Math.min(requestedDuration, maxAllowedEnd - currentDragInfo.originalStartTime))
+
           // Check clip length constraints
           if (overlay.type === OverlayType.CLIP) {
             // For right resize, we're potentially extending from the end
             const isExtending = requestedDuration > currentDragInfo.originalDuration
-            const maxAllowed = isExtending 
+            const maxAllowed = isExtending
               ? getMaxAllowedDurationForExtension(overlay, 'end')
               : getMaxAllowedDuration(overlay, 'clip')
-            let newDuration = Math.min(boundaryConstrainedDuration, maxAllowed)
-            
-            // IMPORTANT: Prevent clip from becoming unreachable behind transitions
-            // When a clip has transitions, we need to ensure it remains clickable
-            let minAccessibleDuration = getMinDuration()
-            
-            if (overlay.transitionOutId) {
-              const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
-              if (transitionOut && transitionOut.duration > 0) {
-                // The issue: when clip becomes very small (1 frame), the transition-out
-                // may visually cover or make it hard to click the clip
-                // Solution: ensure clip is always larger than 1 frame when it has transitions
-                // This gives enough visual space for reliable interaction
-                const bufferFrames = 2 // Ensure at least 2 frames for reliable clicking
-                minAccessibleDuration = getMinDuration() * bufferFrames
-                
-                console.log('Right resize: preventing clip from becoming unreachable', {
-                  transitionOutDuration: transitionOut.duration,
-                  singleFrameDuration: getMinDuration(),
-                  bufferFrames,
-                  minAccessibleDuration
-                })
-              }
-            }
-            
-            if (newDuration < minAccessibleDuration) {
-              // Adjust duration to ensure clip remains accessible
-              newDuration = minAccessibleDuration
-              
-              console.log('Right resize: constraining duration for accessibility', {
-                originalConstrainedDuration: newDuration,
-                minAccessibleDuration,
-                adjustedDuration: newDuration
-              })
-            }
-            
+            const newDuration = Math.min(boundaryConstrainedDuration, maxAllowed)
+
             console.log('Right resize with constraints:', {
               deltaPixels: e.clientX - currentDragInfo.startX,
               deltaTime,
@@ -1133,11 +1216,11 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               originalStartTime: currentDragInfo.originalStartTime,
               overlayStartTime: overlay.startTime
             })
-            
+
             // For right resize, startTime should remain at the original position
             if (!checkCollision(overlay, currentDragInfo.originalStartTime, newDuration)) {
               console.log('Updating duration to:', snapToGrid(newDuration))
-              
+
               // Calculate new trim values immediately based on the new clip properties
               const tempClip = {
                 ...overlay as ClipOverlay,
@@ -1146,12 +1229,12 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               const { trimIn, trimOut } = calculateTrimValues(tempClip)
 
               // Update the main overlay duration with immediate trim values
-              actions.updateOverlayBatch(overlay.id, { 
+              actions.updateOverlayBatch(overlay.id, {
                 duration: snapToGrid(newDuration),
                 trimmedIn: trimIn,
                 trimmedOut: trimOut
               })
-              
+
               // Update transition-out position if it exists
               if (overlay.transitionOutId) {
                 const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
@@ -1164,22 +1247,22 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                              // Update merged transition if present
                const mergedAsFrom = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).fromClipId === overlay.id) as MergedTransitionOverlay | undefined
                const mergedAsTo = state.overlays.find(o => o.type === OverlayType.TRANSITION_MERGED && (o as MergedTransitionOverlay).toClipId === overlay.id) as MergedTransitionOverlay | undefined
-               
+
                if (mergedAsFrom) {
                  // This clip is the fromClip - update merged transition start to stay glued to clip end
                  // and ensure toClip stays connected at the other end of the merged transition
                  const mergedStart = currentDragInfo.originalStartTime + snapToGrid(newDuration)
                  const toClip = state.overlays.find(o => o.id === mergedAsFrom.toClipId)
-                 
+
                  console.log('Right resize: updating merged transition (as fromClip)', mergedAsFrom.id, 'start to', mergedStart)
                  actions.updateOverlayBatch(mergedAsFrom.id, { startTime: mergedStart, row: overlay.row })
-                 
+
                  // Keep toClip attached to the end of the merged transition
                  if (toClip) {
                    const newToClipStart = mergedStart + mergedAsFrom.duration
                    console.log('Right resize: moving toClip', toClip.id, 'to stay attached at', newToClipStart)
                    actions.updateOverlayBatch(toClip.id, { startTime: newToClipStart, row: overlay.row })
-                   
+
                    // Update toClip's transitions to follow
                    if ((toClip as any).transitionInId) {
                      const toTransitionIn = state.overlays.find(o => o.id === (toClip as any).transitionInId)
@@ -1197,7 +1280,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                    }
                  }
                }
-               
+
                if (mergedAsTo) {
                  // This clip is the toClip - when right-resizing toClip, adjust merged transition duration
                  // fromClip stays in place, merged transition adjusts to connect to new toClip end position
@@ -1205,13 +1288,12 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                  if (fromClip) {
                    const mergedStart = fromClip.startTime + fromClip.duration
                    const mergedEnd = currentDragInfo.originalStartTime + snapToGrid(newDuration)
-                   const newMergedDuration = Math.max(getMinDuration(), mergedEnd - mergedStart)
-                   const finalMergedDuration = Math.max(getMinDuration(), snapToGrid(newMergedDuration))
-                   console.log('Right resize: updating merged transition (as toClip)', mergedAsTo.id, 'duration to', finalMergedDuration)
+                   const newMergedDuration = Math.max(0.1, mergedEnd - mergedStart)
+                   console.log('Right resize: updating merged transition (as toClip)', mergedAsTo.id, 'duration to', snapToGrid(newMergedDuration))
                    console.log('Right resize: fromClip stays at', fromClip.startTime, 'toClip end moves to', mergedEnd)
-                   actions.updateOverlayBatch(mergedAsTo.id, { 
-                     duration: finalMergedDuration,
-                     row: overlay.row 
+                   actions.updateOverlayBatch(mergedAsTo.id, {
+                     duration: snapToGrid(newMergedDuration),
+                     row: overlay.row
                    })
                  }
                }
@@ -1222,38 +1304,40 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
         }
       }
     }
-    
+
     const handleMouseUp = () => {
       // Commit history if we were actually dragging
       if (localIsDragging) {
         actions.commitDragHistory()
-        
-        console.log('Drag completed for overlay:', overlay.id)
+
+        // Run post-move processing that may re-run once after snapping
+        processAfterMove(overlay.id)
       }
-      
+
       localIsDragging = false
       setIsDragging(false)
       actions.endDrag()
       options.onDragEnd?.(overlay)
-      
+
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
     }
-    
+
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
   }, [
     dragThreshold,
     pixelToTime,
-    snapToGrid,
-    getMinDuration,
-    getEffectiveClipLength,
-    calculateTrimValues,
-    getMaxAllowedDurationForExtension,
-    getMaxAllowedDuration,
-    getRelatedOverlays,
     findValidPosition,
     checkCollision,
+    snapToGrid,
+    snapOverlappingClip,
+    getRelatedOverlays,
+    checkTransitionOverlaps,
+    checkForTransitionMerge,
+    getMaxAllowedDuration,
+    validateClipTotalLength,
+    getEffectiveClipLength,
     actions,
     options
   ])
