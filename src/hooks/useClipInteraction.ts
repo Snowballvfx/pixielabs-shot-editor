@@ -343,15 +343,19 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
     return time * settings.pixelsPerSecond * state.zoom
   }, [settings.pixelsPerSecond, state.zoom])
 
-  // Snap time to grid if enabled
+  // Snap time to grid if enabled - ensure frame-accurate snapping
   const snapToGrid = useCallback((time: number): number => {
     if (!settings.snapToGrid)
       return time
     // Special case: allow exact 0 values without snapping
     if (time === 0)
       return 0
-    return Math.round(time / settings.gridSize) * settings.gridSize
-  }, [settings.snapToGrid, settings.gridSize])
+    
+    // For frame-accurate editing, snap to frame boundaries (1/fps seconds)
+    const frameDuration = 1 / settings.fps
+    const frameNumber = Math.round(time / frameDuration)
+    return frameNumber * frameDuration
+  }, [settings.snapToGrid, settings.fps])
 
   // Calculate effective clip length based on original length and speed
   const getEffectiveClipLength = useCallback((clip: ClipOverlay): number => {
@@ -569,7 +573,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
   // Find the nearest valid position without collision
   const findValidPosition = useCallback((overlay: Overlay, targetTime: number): number => {
     let testTime = targetTime
-    const step = settings.gridSize
+    const step = 1 / settings.fps // Use frame duration as step size for frame-accurate positioning
     const maxAttempts = 100
 
     // Try the target position first
@@ -590,7 +594,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
 
     // If no valid position found, return original position
     return overlay.startTime
-  }, [checkCollision, snapToGrid, settings.gridSize])
+  }, [checkCollision, snapToGrid, settings.fps])
 
   // Snap overlapping clips to nearest neighbor edge, accounting for transition merge space
   const snapOverlappingClip = useCallback((overlay: Overlay, currentState: typeof state): number => {
@@ -778,7 +782,51 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
 
           // Add timeline boundary constraints - prevent dragging beyond timeline duration
           const maxAllowedStart = Math.max(0, state.duration - anchorCurrent.duration)
-          const boundaryConstrainedTarget = Math.min(anchorTarget, maxAllowedStart)
+          let boundaryConstrainedTarget = Math.min(anchorTarget, maxAllowedStart)
+          
+          // Check if any related transitions would violate timeline boundaries
+          const relatedOverlaysForBoundaryCheck = getRelatedOverlays(overlay)
+          const proposedDelta = boundaryConstrainedTarget - anchorCurrent.startTime
+          
+          // Check each related overlay for boundary violations
+          relatedOverlaysForBoundaryCheck.forEach(relatedOverlay => {
+            if (relatedOverlay.type === OverlayType.TRANSITION_IN) {
+              const parent = state.overlays.find(o => o.id === (relatedOverlay as TransitionInOverlay).parentClipId)
+              if (parent) {
+                const parentNewStart = parent.startTime + proposedDelta
+                const tInStart = parentNewStart - relatedOverlay.duration
+                if (tInStart < 0) {
+                  // Calculate maximum allowed delta to keep transition at 0
+                  // maxDelta = how much can parent move before transition goes below 0
+                  const maxDelta = relatedOverlay.duration - parent.startTime
+                  // If maxDelta is negative or zero, don't allow any leftward movement
+                  if (maxDelta <= 0) {
+                    boundaryConstrainedTarget = anchorCurrent.startTime // No movement allowed
+                  } else {
+                    boundaryConstrainedTarget = Math.min(boundaryConstrainedTarget, anchorCurrent.startTime - maxDelta)
+                  }
+                }
+              }
+            }
+            if (relatedOverlay.type === OverlayType.TRANSITION_OUT) {
+              const parent = state.overlays.find(o => o.id === (relatedOverlay as TransitionOutOverlay).parentClipId)
+              if (parent) {
+                const parentNewStart = parent.startTime + proposedDelta
+                const tOutStart = parentNewStart + parent.duration
+                const tOutEnd = tOutStart + relatedOverlay.duration
+                if (tOutEnd > state.duration) {
+                  // Calculate maximum allowed delta to keep transition within timeline
+                  const maxDelta = state.duration - (parent.startTime + parent.duration + relatedOverlay.duration)
+                  // If maxDelta is negative or zero, don't allow any rightward movement
+                  if (maxDelta <= 0) {
+                    boundaryConstrainedTarget = anchorCurrent.startTime // No movement allowed
+                  } else {
+                    boundaryConstrainedTarget = Math.min(boundaryConstrainedTarget, anchorCurrent.startTime + maxDelta)
+                  }
+                }
+              }
+            }
+          })
 
           // For clips, allow overlaps during drag - for transitions, use collision detection
           const validAnchorStart = anchorCurrent.type === OverlayType.CLIP
@@ -797,7 +845,10 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 // Find the parent's new position after the delta has been applied
                 const parentNewStart = snapToGrid(parent.startTime + deltaSinceLast)
                 const tInStart = parentNewStart - relatedOverlay.duration
-                actions.updateOverlayBatch(relatedOverlay.id, { startTime: tInStart, row: parent.row })
+                
+                // Ensure transition-in never starts before timeline start (0)
+                const constrainedTInStart = Math.max(0, tInStart)
+                actions.updateOverlayBatch(relatedOverlay.id, { startTime: constrainedTInStart, row: parent.row })
                 return
               }
             }
@@ -807,7 +858,11 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 // Find the parent's new position after the delta has been applied  
                 const parentNewStart = snapToGrid(parent.startTime + deltaSinceLast)
                 const tOutStart = parentNewStart + parent.duration
-                actions.updateOverlayBatch(relatedOverlay.id, { startTime: tOutStart, row: parent.row })
+                
+                // Ensure transition-out never extends beyond timeline duration
+                const maxAllowedStart = Math.min(tOutStart, state.duration - relatedOverlay.duration)
+                const constrainedTOutStart = Math.max(0, maxAllowedStart)
+                actions.updateOverlayBatch(relatedOverlay.id, { startTime: constrainedTOutStart, row: parent.row })
                 return
               }
             }
@@ -982,6 +1037,25 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           // Final boundary check for left resize
           const boundaryConstrainedDuration = Math.max(minFrameDuration, Math.min(finalDuration, maxAllowedEndTime - newStartTime))
 
+          // Additional constraint: ensure transition-in doesn't go below frame 0
+          // If the transition-in would go below frame 0, stop the resize completely
+          if (overlay.type === OverlayType.CLIP) {
+            const clipOverlay = overlay as ClipOverlay
+            if (clipOverlay.transitionInId) {
+              const transitionIn = state.overlays.find(o => o.id === clipOverlay.transitionInId)
+              if (transitionIn) {
+                // Calculate where the transition-in would start with the new clip position
+                const wouldBeTransitionStart = newStartTime - transitionIn.duration
+                
+                // If transition-in would go below frame 0, don't allow the resize
+                if (wouldBeTransitionStart < 0) {
+                  console.log('Left resize blocked: would push transition-in below frame 0')
+                  return // Stop the resize operation completely
+                }
+              }
+            }
+          }
+
           // Check clip length constraints
           if (overlay.type === OverlayType.CLIP) {
             const clipOverlay = overlay as ClipOverlay
@@ -995,11 +1069,11 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
             // Ensure duration doesn't go below minimum
             const constrainedDuration = Math.max(minFrameDuration, newDuration)
             
-            // If we're at minimum duration, recalculate start time to prevent clip movement
+            // Use the new start time, but ensure minimum duration
             let constrainedStartTime = newStartTime
             if (constrainedDuration <= minFrameDuration) {
               const originalEndTime = currentDragInfo.originalStartTime + currentDragInfo.originalDuration
-              constrainedStartTime = originalEndTime - minFrameDuration
+              constrainedStartTime = Math.max(newStartTime, originalEndTime - minFrameDuration)
             }
 
             // When left-resizing, we're effectively trimming more from the beginning
@@ -1052,14 +1126,18 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 const transitionIn = state.overlays.find(o => o.id === overlay.transitionInId)
                 if (transitionIn) {
                   const tInStart = snapToGrid(constrainedStartTime) - transitionIn.duration
-                  actions.updateOverlayBatch(overlay.transitionInId, { startTime: tInStart, row: overlay.row })
+                  // Ensure transition-in never starts before frame 0
+                  const constrainedTInStart = Math.max(0, tInStart)
+                  actions.updateOverlayBatch(overlay.transitionInId, { startTime: constrainedTInStart, row: overlay.row })
                 }
               }
               if (overlay.transitionOutId) {
                 const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
                 if (transitionOut) {
                   const newTransitionOutStart = snapToGrid(constrainedStartTime) + snapToGrid(constrainedDuration)
-                  actions.updateOverlayBatch(overlay.transitionOutId, { startTime: newTransitionOutStart, row: overlay.row })
+                  // Ensure transition-out never extends beyond timeline duration
+                  const constrainedTOutStart = Math.min(newTransitionOutStart, state.duration - transitionOut.duration)
+                  actions.updateOverlayBatch(overlay.transitionOutId, { startTime: Math.max(0, constrainedTOutStart), row: overlay.row })
                 }
               }
 
@@ -1276,6 +1354,26 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
           
           // Ensure the end time (start + duration) never exceeds timeline duration
           const maxPossibleDuration = maxAllowedEnd - currentStartTime
+          
+          // Additional constraint: ensure transition-out doesn't extend beyond timeline
+          // If the transition-out would go beyond timeline, stop the resize completely
+          if (overlay.type === OverlayType.CLIP) {
+            const clipOverlay = overlay as ClipOverlay
+            if (clipOverlay.transitionOutId) {
+              const transitionOut = state.overlays.find(o => o.id === clipOverlay.transitionOutId)
+              if (transitionOut) {
+                // Calculate where the transition-out would end with the new clip duration
+                const wouldBeTransitionEnd = currentStartTime + requestedDuration + transitionOut.duration
+                
+                // If transition-out would go beyond timeline, don't allow the resize
+                if (wouldBeTransitionEnd > state.duration) {
+                  console.log('Right resize blocked: would push transition-out beyond timeline end')
+                  return // Stop the resize operation completely
+                }
+              }
+            }
+          }
+          
           const boundaryConstrainedDuration = Math.max(
             minFrameDuration, 
             Math.min(requestedDuration, maxPossibleDuration)
@@ -1324,7 +1422,9 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                 const transitionOut = state.overlays.find(o => o.id === overlay.transitionOutId)
                 if (transitionOut) {
                   const newTransitionOutStart = currentDragInfo.originalStartTime + snapToGrid(newDuration)
-                  actions.updateOverlayBatch(overlay.transitionOutId, { startTime: newTransitionOutStart, row: overlay.row })
+                  // Ensure transition-out never extends beyond timeline duration
+                  const constrainedTOutStart = Math.min(newTransitionOutStart, state.duration - transitionOut.duration)
+                  actions.updateOverlayBatch(overlay.transitionOutId, { startTime: Math.max(0, constrainedTOutStart), row: overlay.row })
                 }
               }
 

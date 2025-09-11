@@ -9,7 +9,7 @@ export const demoOverlays: Overlay[] = [
   {
     id: 'clip-1',
     type: OverlayType.CLIP,
-    startTime: 1/24, // Starts after 1 frame transition-in (~0.04167s at 24fps)
+    startTime: 2/24, // Starts after 1 frame transition-in (~0.04167s at 24fps)
     duration: 8,
     row: 0,
     src: '/demo/video1.mp4',
@@ -31,7 +31,7 @@ export const demoOverlays: Overlay[] = [
     id: 'clip-1-transition-in',
     type: OverlayType.TRANSITION_IN,
     startTime: 0, // Starts at timeline beginning
-    duration: 1/24, // Exactly 1 frame duration (~0.04167s at 24fps)
+    duration: 2/24, // Exactly 1 frame duration (~0.04167s at 24fps)
     row: 0,
     selected: false,
     parentClipId: 'clip-1',

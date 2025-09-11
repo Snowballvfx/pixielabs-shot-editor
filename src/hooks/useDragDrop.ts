@@ -44,12 +44,16 @@ export const useDragDrop = () => {
     return Math.floor(adjustedPixel / settings.trackHeight)
   }, [settings.trackHeight])
 
-  // Snap time to grid if enabled
+  // Snap time to grid if enabled - ensure frame-accurate snapping
   const snapToGrid = useCallback((time: number): number => {
     if (!settings.snapToGrid) return time
     if (time === 0) return 0 // Allow exact 0 values
-    return Math.round(time / settings.gridSize) * settings.gridSize
-  }, [settings.snapToGrid, settings.gridSize])
+    
+    // For frame-accurate editing, snap to frame boundaries (1/fps seconds)
+    const frameDuration = 1 / settings.fps
+    const frameNumber = Math.round(time / frameDuration)
+    return frameNumber * frameDuration
+  }, [settings.snapToGrid, settings.fps])
 
   // Generate unique ID for new clips
   const generateClipId = useCallback((): string => {
