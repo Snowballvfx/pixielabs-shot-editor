@@ -606,11 +606,19 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
       // Compute merged start and end to connect the clips properly
       // The merged transition should start where the left clip ends and end where the right clip starts
       const leftClipEnd = leftClip.startTime + leftClip.duration
-      const rightClipStart = rightClip.startTime
       
-      const mergedStart = leftClipEnd
-      const mergedEnd = rightClipStart
-      const mergedDuration = Math.max(0.05, mergedEnd - mergedStart)
+      const leftOutDur = (transitionOut as any).type === OverlayType.TRANSITION_OUT ? (transitionOut as any).duration : (transitionIn as any).duration
+      const rightInDur = (transitionIn as any).type === OverlayType.TRANSITION_IN ? (transitionIn as any).duration : (transitionOut as any).duration
+      const shortestTransition = Math.min(leftOutDur || 0, rightInDur || 0)
+      const minFrameDuration = 2 / state.settings.fps
+      // Keep right clip fixed: merged end equals right clip start
+      const mergedEnd = rightClip.startTime
+      const mergedDuration = Math.max(minFrameDuration, shortestTransition)
+      const mergedStart = mergedEnd - mergedDuration
+
+      // Shorten left clip to end at mergedStart (do not move right clip)
+      // oldLeftDuration not needed; we directly set newLeftDuration
+      const newLeftDuration = Math.max(minFrameDuration, mergedStart - (leftClip as any).startTime)
       
       // Create merged transition
       const mergedTransition: MergedTransitionOverlay = {
@@ -625,43 +633,42 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
         transitionType: (transitionOut as any).transitionType || (transitionIn as any).transitionType || 'fade'
       }
       
-      // Position the rightClip (toClip) to start at the end of the merged transition
-      const correctRightClipStart = mergedStart + mergedDuration
-      const updatedRightClip = {
-        ...rightClip,
-        startTime: correctRightClipStart
-      }
-
-      // Update rightClip's transitions to follow it to the new position
-      const rightClipTransitionIn = state.history.present.overlays.find(o => o.id === (rightClip as any).transitionInId)
-      const rightClipTransitionOut = state.history.present.overlays.find(o => o.id === (rightClip as any).transitionOutId)
-
-      // Remove individual transitions and add merged one, update rightClip and its remaining transitions
-      const updatedOverlays = state.history.present.overlays
+      // Remove individual transitions and add merged one; do not move rightClip on merge creation
+      let updatedOverlays = state.history.present.overlays
         .filter(o => o.id !== transitionOutId && o.id !== transitionInId)
         .map(o => {
-          if (o.id === rightClip.id) {
-            return updatedRightClip
-          }
-          // Update rightClip's remaining transition-in position (if it exists and wasn't removed)
-          if (rightClipTransitionIn && o.id === rightClipTransitionIn.id) {
-            return {
-              ...o,
-              startTime: correctRightClipStart - o.duration,
-              row: updatedRightClip.row
-            }
-          }
-          // Update rightClip's remaining transition-out position (if it exists)
-          if (rightClipTransitionOut && o.id === rightClipTransitionOut.id) {
-            return {
-              ...o,
-              startTime: correctRightClipStart + updatedRightClip.duration,
-              row: updatedRightClip.row
-            }
+          if (o.id === leftClip.id) {
+            return { ...o, duration: newLeftDuration }
           }
           return o
         })
         .concat(mergedTransition as any)
+
+      // Adjust trims for both clips on merge creation
+      const leftClipIndex = updatedOverlays.findIndex(o => o.id === leftClip.id)
+      const rightClipIndex = updatedOverlays.findIndex(o => o.id === rightClip.id)
+      if (leftClipIndex !== -1) {
+        const lc = updatedOverlays[leftClipIndex] as any
+        const leftOut = state.history.present.overlays.find(o => o.id === (leftClip as any).transitionOutId)
+        const prevEndUse = (leftOut?.duration || 0)
+        const nextEndUse = mergedDuration
+        const deltaEndUse = nextEndUse - prevEndUse
+        updatedOverlays[leftClipIndex] = {
+          ...lc,
+          trimmedOut: Math.max(0, (lc.trimmedOut || 0) - deltaEndUse)
+        }
+      }
+      if (rightClipIndex !== -1) {
+        const rc = updatedOverlays[rightClipIndex] as any
+        const rightIn = state.history.present.overlays.find(o => o.id === (rightClip as any).transitionInId)
+        const prevStartUse = (rightIn?.duration || 0)
+        const nextStartUse = mergedDuration
+        const deltaStartUse = nextStartUse - prevStartUse
+        updatedOverlays[rightClipIndex] = {
+          ...rc,
+          trimmedIn: Math.max(0, (rc.trimmedIn || 0) - deltaStartUse)
+        }
+      }
       
       const newState = {
         ...state.history.present,

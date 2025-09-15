@@ -4,24 +4,22 @@ export const demoOverlays: Overlay[] = [
   // Video clip on track 0 - positioned AFTER its 1-frame transition-in
   // Pattern: transition-in (0 -> 1 frame) -> video content starts at 1 frame
   // Original length: 15s, Speed: 1.0x, Effective length: 15s
-  // Used: mediaStartTime(2s) + duration(8s) = 10s of 15s source
-  // So trimmedIn = 2s/1.0 = 2s, trimmedOut = 15s - 10s = 5s
+  // Example trims: trimmedIn and trimmedOut are authoritative
   {
     id: 'clip-1',
     type: OverlayType.CLIP,
-    startTime: 2/24, // Starts after 1 frame transition-in (~0.04167s at 24fps)
+    startTime: 0.5, // Starts after 1 frame transition-in (~0.04167s at 24fps)
     duration: 8,
     row: 0,
     src: '/demo/video1.mp4',
-    mediaStartTime: 2, // Started at 2 seconds in source (trim-in)
     volume: 1,
     muted: false,
     selected: false,
     label: 'Video 1 (Trimmed)',
     length: 15, // Original video length in seconds
     speed: 1.0, // Normal playback speed
-    trimmedIn: 0, // Will be calculated by trim detection
-    trimmedOut: 0, // Will be calculated by trim detection
+    trimmedIn: 2, // initial trim-in (seconds on timeline)
+    trimmedOut: 4, // initial trim-out (seconds on timeline)
     transitionInId: 'clip-1-transition-in',
     transitionOutId: 'clip-1-transition-out'
   },
@@ -31,7 +29,7 @@ export const demoOverlays: Overlay[] = [
     id: 'clip-1-transition-in',
     type: OverlayType.TRANSITION_IN,
     startTime: 0, // Starts at timeline beginning
-    duration: 2/24, // Exactly 1 frame duration (~0.04167s at 24fps)
+    duration: 0.5, // Exactly 1 frame duration (~0.04167s at 24fps)
     row: 0,
     selected: false,
     parentClipId: 'clip-1',
@@ -42,7 +40,7 @@ export const demoOverlays: Overlay[] = [
   {
     id: 'clip-1-transition-out',
     type: OverlayType.TRANSITION_OUT,
-    startTime: 1/24 + 8, // starts when main clip ends (~8.04167s)
+    startTime: 0.5 + 8, // starts when main clip ends (~8.04167s)
     duration: 0.5,
     row: 0,
     selected: false,
@@ -52,8 +50,7 @@ export const demoOverlays: Overlay[] = [
   
   // Second video clip on track 0 - separated from clip-1 with gap
   // Original length: 12s, Speed: 2.0x, Effective length: 6s
-  // Used: mediaStartTime(1s) + duration(4s) = 5s of 6s effective (10s of 12s source)
-  // So trimmedIn = 1s/2.0 = 0.5s timeline, trimmedOut = 6s - 5s = 1s timeline
+  // Example trims: trimmedIn/trimmedOut are set explicitly
   {
     id: 'clip-2',
     type: OverlayType.CLIP,
@@ -61,15 +58,14 @@ export const demoOverlays: Overlay[] = [
     duration: 4,
     row: 0,
     src: '/demo/video2.mp4',
-    mediaStartTime: 1, // Started at 1 second in source
     volume: 0.8,
     muted: false,
     selected: false,
     label: 'Video 2 (2x Speed)',
     length: 12, // Original video length in seconds
     speed: 2.0, // Double speed
-    trimmedIn: 0, // Will be calculated by trim detection
-    trimmedOut: 0, // Will be calculated by trim detection
+    trimmedIn: 0.5, // initial trim-in (timeline seconds)
+    trimmedOut: 0.5, // initial trim-out (timeline seconds)
     transitionInId: 'clip-2-transition-in',
     transitionOutId: 'clip-2-transition-out'
   },
@@ -160,7 +156,6 @@ export const demoOverlays: Overlay[] = [
     duration: 40,
     row: 1,
     src: '/demo/sample-audio.mp3', // Replace with your audio file URL
-    mediaStartTime: 0,
     volume: 0.6,
     muted: false,
     selected: false,
@@ -202,7 +197,6 @@ export function createWaveformTrack(
     volume: number
     muted: boolean
     label: string
-    mediaStartTime: number
   }> = {}
 ): SoundOverlay {
   return {
@@ -212,7 +206,6 @@ export function createWaveformTrack(
     duration,
     row,
     src: audioUrl,
-    mediaStartTime: options.mediaStartTime || 0,
     volume: options.volume || 0.6,
     muted: options.muted || false,
     selected: false,
@@ -265,7 +258,6 @@ export function generateRandomOverlay(id: string, row: number): Overlay {
       return {
         ...baseOverlay,
         src: `/demo/random-video-${Math.floor(Math.random() * 5) + 1}.mp4`,
-        mediaStartTime: 0,
         volume: 0.5 + Math.random() * 0.5,
         muted: Math.random() > 0.7,
         length: 10 + Math.random() * 20, // Random length between 10-30 seconds
@@ -278,7 +270,6 @@ export function generateRandomOverlay(id: string, row: number): Overlay {
       return {
         ...baseOverlay,
         src: `/demo/random-audio-${Math.floor(Math.random() * 3) + 1}.mp3`,
-        mediaStartTime: 0,
         volume: 0.3 + Math.random() * 0.4,
         muted: false
       } as SoundOverlay

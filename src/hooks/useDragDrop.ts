@@ -219,13 +219,13 @@ export const useDragDrop = () => {
           selected: false,
           label: clipData.label || clipData.src.split('/').pop() || 'Untitled',
           src: clipData.src,
-          mediaStartTime: 0, // Start from beginning of clip
           volume: 1, // Full volume by default
           muted: false,
           length: clipData.length,
           speed: 1.0, // Normal speed
-          trimmedIn: 0,
-          trimmedOut: Math.max(0, clipData.length - duration), // Trim from end if needed
+          // Initialize trims from timeline geometry (authoritative)
+          trimmedIn: Math.max(0, (time - Math.max(0, time - 0.5))),
+          trimmedOut: Math.max(0, (clipData.length / 1.0) - duration),
           transitionInId: transitionInId,
           transitionOutId: transitionOutId
         } as ClipOverlay
@@ -266,7 +266,6 @@ export const useDragDrop = () => {
           selected: false,
           label: clipData.label || clipData.src.split('/').pop() || 'Untitled',
           src: clipData.src,
-          mediaStartTime: 0,
           volume: 0.8, // Slightly lower volume for audio tracks
           muted: false,
         }

@@ -25,7 +25,6 @@ export interface BaseOverlay {
 export interface ClipOverlay extends BaseOverlay {
   type: OverlayType.CLIP
   src: string
-  mediaStartTime: number
   volume: number
   muted: boolean
   length: number // Original/source media length in seconds
@@ -37,7 +36,6 @@ export interface ClipOverlay extends BaseOverlay {
 export interface SoundOverlay extends BaseOverlay {
   type: OverlayType.SOUND
   src: string
-  mediaStartTime: number
   volume: number
   muted: boolean
   waveformData?: number[]
