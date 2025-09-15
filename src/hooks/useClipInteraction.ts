@@ -405,8 +405,8 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
       (o as MergedTransitionOverlay).toClipId === clip.id
     ) as MergedTransitionOverlay | undefined
 
-    const transitionIn = state.overlays.find(o => o.id === clip.transitionInId)
-    const transitionOut = state.overlays.find(o => o.id === clip.transitionOutId)
+      const transitionIn = state.overlays.find(o => o.id === clip.transitionInId)
+      const transitionOut = state.overlays.find(o => o.id === clip.transitionOutId)
 
     // Derive trimIn from left edge: distance from left transition edge to media start inside the clip
     // Since mediaStartTime is removed, use stored trimmedIn as authoritative baseline
@@ -1015,7 +1015,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
 
                 const newFromDuration = Math.max(minFrameDuration, fromClip.duration + allowedRight)
                 const newMergedStart = originalMergedStart + allowedRight
-                const newMergedDuration = originalMergedEnd - newMergedStart
+              const newMergedDuration = originalMergedEnd - newMergedStart
 
                 // Update fromClip duration, preserve trimOut
                 actions.updateOverlayBatch(fromClip.id, {
@@ -1337,20 +1337,37 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
                }
 
                if (mergedAsTo) {
-                 // This clip is the toClip - when left-resizing toClip, adjust merged transition duration
-                 // fromClip stays in place, merged transition adjusts to connect to new toClip position
-                 const fromClip = state.overlays.find(o => o.id === mergedAsTo.fromClipId)
+                 // This clip is the toClip - when left-resizing toClip, MOVE merged transition with toClip (preserve duration)
+                 const fromClip = state.overlays.find(o => o.id === mergedAsTo.fromClipId) as ClipOverlay | undefined
                  if (fromClip) {
-                   const mergedStart = fromClip.startTime + fromClip.duration
-                   const mergedEnd = snapToGrid(constrainedStartTime)
-                   const newMergedDuration = Math.max(minFrameDuration, mergedEnd - mergedStart)
-                   console.log('Left resize: updating merged transition (as toClip)', mergedAsTo.id, 'duration to', snapToGrid(newMergedDuration))
-                   console.log('Left resize: fromClip stays at', fromClip.startTime, 'toClip moves to', snapToGrid(constrainedStartTime))
+                   const deltaShift = snapToGrid(constrainedStartTime) - currentDragInfo.originalStartTime
+                   const newMergedStart = snapToGrid(mergedAsTo.startTime + deltaShift)
+                   const preservedDuration = mergedAsTo.duration
+
+                   // Move merged; keep duration
                    actions.updateOverlayBatch(mergedAsTo.id, {
-                     startTime: mergedStart,
-                     duration: snapToGrid(newMergedDuration),
+                     startTime: newMergedStart,
+                     duration: preservedDuration,
                      row: overlay.row
                    })
+
+                   // Move fromClip by the same delta so its end stays glued to merged start
+                   const newFromStart = fromClip.startTime + deltaShift
+                   actions.updateOverlayBatch(fromClip.id, { startTime: snapToGrid(newFromStart), row: fromClip.row })
+
+                   // Update fromClip transitions to follow
+                   if ((fromClip as any).transitionInId) {
+                     const tIn = state.overlays.find(o => o.id === (fromClip as any).transitionInId)
+                     if (tIn) {
+                       actions.updateOverlayBatch((fromClip as any).transitionInId, { startTime: snapToGrid(tIn.startTime + deltaShift), row: fromClip.row })
+                     }
+                   }
+                   if ((fromClip as any).transitionOutId) {
+                     const tOut = state.overlays.find(o => o.id === (fromClip as any).transitionOutId)
+                     if (tOut) {
+                       actions.updateOverlayBatch((fromClip as any).transitionOutId, { startTime: snapToGrid(tOut.startTime + deltaShift), row: fromClip.row })
+                     }
+                   }
                  }
                }
             } else {
