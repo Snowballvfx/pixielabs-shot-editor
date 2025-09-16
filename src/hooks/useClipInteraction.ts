@@ -1422,13 +1422,6 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               const appliedIncrease = Math.min(desiredIncrease, availableTrimOut)
               const newTransitionDuration = prevDuration + appliedIncrease
 
-              // Create temporary clip state with updated transition duration for trim calculation
-              const tempClip = {
-                ...parentClip,
-                transitionOutId: overlay.id // Ensure it references this transition
-              }
-
-              // Calculate trim values considering the new transition duration
               // Trim rules: adjust only trimOut for transition-out changes; keep trimIn
               const currentTrimOut = parentClip.trimmedOut
               const currentTrimIn = parentClip.trimmedIn
@@ -1464,9 +1457,7 @@ export function useClipInteraction(options: UseClipInteractionOptions = {}) {
               
               // From-clip trimOut capacity cap: merged duration cannot exceed available trimOut budget
               const fromClipOverlay = fromClip as ClipOverlay
-              const effectiveFromLen = getEffectiveClipLength(fromClipOverlay)
               // Use stored trims as authoritative
-              const baseFromTrimIn = fromClipOverlay.trimmedIn
               const baseFromTrimOut = fromClipOverlay.trimmedOut
               const fromTransitionOut = state.overlays.find(o => o.id === (fromClipOverlay as any).transitionOutId)
               const fromTransitionOutDur = fromTransitionOut?.duration || 0

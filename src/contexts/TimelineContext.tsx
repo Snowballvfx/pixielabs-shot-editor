@@ -605,7 +605,6 @@ function timelineReducer(state: TimelineContextState, action: TimelineAction): T
 
       // Compute merged start and end to connect the clips properly
       // The merged transition should start where the left clip ends and end where the right clip starts
-      const leftClipEnd = leftClip.startTime + leftClip.duration
       
       const leftOutDur = (transitionOut as any).type === OverlayType.TRANSITION_OUT ? (transitionOut as any).duration : (transitionIn as any).duration
       const rightInDur = (transitionIn as any).type === OverlayType.TRANSITION_IN ? (transitionIn as any).duration : (transitionOut as any).duration
