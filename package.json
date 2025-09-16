@@ -1,7 +1,7 @@
 {
   "name": "pixielabs-shot-editor",
   "private": false,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./dist/style.css": "./dist/style.css"
   },
   "main": "dist/index.js",
   "module": "dist/index.js",
