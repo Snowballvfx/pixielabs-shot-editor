@@ -22,6 +22,12 @@ export default defineConfig({
     },
     rollupOptions: {
       external: ['react', 'react-dom'],
+      output: {
+        assetFileNames: (assetInfo) => {
+          if (assetInfo.name === 'index.css') return 'style.css';
+          return assetInfo.name;
+        },
+      },
     },
   },
 })
