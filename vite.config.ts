@@ -13,4 +13,15 @@ export default defineConfig({
       'react-native': 'react-native-web',
     },
   },
+  build: {
+    lib: {
+      entry: path.resolve(__dirname, 'src/index.ts'),
+      name: 'PixielabsShotEditor',
+      fileName: 'index',
+      formats: ['es'],
+    },
+    rollupOptions: {
+      external: ['react', 'react-dom'],
+    },
+  },
 })
