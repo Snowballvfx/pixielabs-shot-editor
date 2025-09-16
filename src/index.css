@@ -539,45 +539,4 @@ body {
   100% { opacity: 0.5; }
 }
 
-/* Clips Gallery Styles */
-.clips-gallery {
-  background-color: #1a1a1a;
-  height: 100%;
-  padding: 12px;
-  border-right: 1px solid #333;
-  box-sizing: border-box;
-}
-
-.gallery-header {
-  margin-bottom: 12px;
-  text-align: center;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #333;
-}
-
-.gallery-header h3 {
-  color: #ffffff;
-  margin: 0 0 4px 0;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.gallery-header p {
-  color: #aaa;
-  margin: 0;
-  font-size: 10px;
-}
-
-.gallery-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.gallery-clip {
-  user-select: none;
-}
-
-.gallery-clip:active {
-  transform: scale(0.98) !important;
-}
+/* Clips Gallery Styles removed */
