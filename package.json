@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.build.json && vite build && node scripts/copy-style.mjs",
     "prepare": "npm run build",
+    "postinstall": "node -e \"const fs=require('fs');const path=require('path');fs.mkdirSync('dist',{recursive:true});const src=path.join(__dirname,'src','index.css');const out=path.join(__dirname,'dist','style.css');try{fs.copyFileSync(src,out);console.log('[pixielabs-shot-editor] ensured dist/style.css');}catch(e){console.warn('[pixielabs-shot-editor] postinstall copy failed:',e&&e.message||e);}\"",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
@@ -31,6 +32,15 @@
   "sideEffects": [
     "dist/style.css",
     "**/*.css"
+  ],
+  "files": [
+    "dist/**",
+    "src/**",
+    "scripts/**",
+    "vite.config.ts",
+    "tsconfig*.json",
+    "README.md",
+    "LICENSE"
   ],
   "peerDependencies": {
     "react": ">=18",
